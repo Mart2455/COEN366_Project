@@ -16,38 +16,37 @@ public class EmergencyServer
 
     public static void main(String[] args) throws IOException
     {
-        // TODO: Create the UDP socket and listen to message here
+        // TODO: Create the UDP socket
 
-        // Creates the server
         try
         {
             
             EmergencyServer server = new EmergencyServer(5000);
             System.err.println("Server started on UDP port 5000");
 
-            // ! Need to allow the server to receive a message
             byte[] Buffer = new byte[1024];
             DatagramPacket Packet = new DatagramPacket(Buffer, Buffer.length);
 
-            DatagramSocket socket;
             // Allows the server to receive the message
             server.socket.receive(Packet);
+            
+            // Translate the received message 
+            // String(byte[] bytes, int offset, int length, Charset charset)
 
+            String message = new String(
+                Packet.getData(),
+                Packet.getOffset(),
+                Packet.getLength(),
+                java.nio.charset.StandardCharsets.UTF_8
+            );
+            // We can finally print the message
+            System.out.println("Received: " + message); 
 
         }
         catch (SocketException Error)
         {
             System.err.println("Could not start server: " + Error.getMessage());
         }
-
-        
-
-        
-
-
-
-        
-
     }
 
 }
