@@ -1,0 +1,43 @@
+package com.cenrs.protocol;
+
+public enum MessageType {
+    //number is number of required fields after message name 
+    REGISTER("REGISTER", 6),
+    REGISTERED("REGISTERED", 3),
+    REGISTER_DENIED("REGISTER-DENIED", 2),
+    DE_REGISTER("DE-REGISTER", 2),
+    SUBSCRIBE("SUBSCRIBE", 3),
+    SUBSCRIBED("SUBSCRIBED", 1),
+    SUBSCRIPTION_DENIED("SUBSCRIPTION-DENIED", 2),
+    UNSUBSCRIBE("UNSUBSCRIBE", 3);
+
+    private final String wireName;
+    private final int fieldCount;
+
+    MessageType(String wireName, int fieldCount) {
+        this.wireName = wireName;
+        this.fieldCount = fieldCount;
+    }
+
+    public String wireName() {
+        return wireName;
+    }
+
+    public int fieldCount() {
+        return fieldCount;
+    }
+
+    public static MessageType fromWireName(String wireName)
+        throws ProtocolException {
+
+        for (MessageType type : values()) {
+            if (type.wireName.equals(wireName)) {
+                return type;
+            }
+        }
+
+        throw new ProtocolException(
+            "Unknown message type: " + wireName
+        );
+    }
+}
