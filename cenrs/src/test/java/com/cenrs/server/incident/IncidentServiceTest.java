@@ -14,6 +14,7 @@ import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.ClientRole;
 import com.cenrs.contract.Incident;
 import com.cenrs.contract.IncidentStatus;
+import com.cenrs.contract.Severity;
 import com.cenrs.contract.fake.FakePorts;
 import com.cenrs.contract.port.IncidentEventSinkPort;
 import com.cenrs.contract.port.IncidentIdGeneratorPort;
@@ -25,6 +26,7 @@ public class IncidentServiceTest
     private FakePorts.Registry registry;
     private FakePorts.Incidents store;
     private List<Incident> createdEvents;
+    private List<Incident> updatedEvents;
     private IncidentService service;
     private ControlMessage request;
     private InetSocketAddress sender;
@@ -35,6 +37,7 @@ public class IncidentServiceTest
         registry = new FakePorts.Registry();
         store = new FakePorts.Incidents();
         createdEvents = new ArrayList<>();
+        updatedEvents = new ArrayList<>();
 
         IncidentIdGeneratorPort idGenerator = () -> "INC1";
 
@@ -46,6 +49,7 @@ public class IncidentServiceTest
 
             @Override
             public void onUpdated(Incident incident) {
+                updatedEvents.add(incident);
             }
 
             @Override
@@ -178,4 +182,50 @@ public class IncidentServiceTest
     }
 
     
+
+    @Test
+    public void creatorCanUpdateActiveIncident() {
+        // Arrange: register the creator and publish the original incident.
+        registry.addIfAbsent(new ClientProfile(
+                "ALI", ClientRole.PUBLISHER,
+                "127.0.0.1", 5001, 6001
+        ));
+        service.publish(request, sender);
+        Incident original = store.findById("INC1").orElseThrow();
+
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING",
+                "Fire controlled", "Remain outside"
+        );
+
+        // Act: update the incident from its creator's endpoint.
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify acceptance includes the request number, ID, and new version.
+        assertEquals(MessageType.ALERT_UPDATED, response.type());
+        assertEquals("2", response.field(0));
+        assertEquals("INC1", response.field(1));
+        assertEquals("2", response.field(2));
+
+        Incident updated = store.findById("INC1").orElseThrow();
+
+        // Verify the stored version increased and new details were applied.
+        assertEquals(2L, updated.version());
+        assertEquals(Severity.WARNING, updated.severity());
+        assertEquals("Fire controlled", updated.title());
+        assertEquals("Remain outside", updated.description());
+
+        // Verify identity, metadata, ownership, and active status were preserved.
+        assertEquals(original.incidentId(), updated.incidentId());
+        assertEquals(original.category(), updated.category());
+        assertEquals(original.location(), updated.location());
+        assertEquals(original.attachment(), updated.attachment());
+        assertEquals(original.publisherName(), updated.publisherName());
+        assertEquals(IncidentStatus.ACTIVE, updated.status());
+
+        // Verify exactly one update event contains the newly stored incident.
+        assertEquals(1, updatedEvents.size());
+        assertEquals(updated, updatedEvents.get(0));
+    }
 }

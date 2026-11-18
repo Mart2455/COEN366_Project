@@ -13,8 +13,10 @@ import com.cenrs.protocol.MessageType;
 import com.cenrs.contract.Severity;
 import com.cenrs.contract.IncidentStatus;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import java.util.ResourceBundle.Control;
 
 
 
@@ -86,5 +88,115 @@ public class IncidentService {
         // Return the incident
         eventSink.onCreated(incident);
         return ControlMessage.of(MessageType.ALERT_ACCEPTED, request.field(0) , incident.incidentId());
+    }
+
+
+
+    public ControlMessage update(ControlMessage request, InetSocketAddress sender)
+    {
+        // Need to get the request number and incident ID
+
+        String requestNumber = request.field(0);
+
+        String incidentId = request.field(1);
+
+        sender.getAddress();
+        // FInd registered client with UDP endpoint
+        var publisher = registry.findAll().stream().filter(client -> 
+            client.ipAddress().equals(sender.getAddress().getHostAddress()) && 
+                                    client.udpPort() == sender.getPort()).findFirst();        
+
+
+            // if publisher doesntexist
+
+            if (publisher.isEmpty())
+            {
+                return ControlMessage.of(
+                MessageType.ALERT_DENIED,
+                requestNumber,
+                "Client is not registered"
+                );
+            }
+
+            // Find the incident that the client wants to update.
+            var existing = store.findById(incidentId);
+
+            if (existing.isEmpty()) 
+            {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Unknown incident"
+                );
+            }
+
+            Incident current = existing.get();
+
+            // Closed incidents cannot be updated.
+            if (current.status() != IncidentStatus.ACTIVE) {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Incident is closed"
+                );
+            }
+
+            // Only the original publisher may modify this incident.
+            if (!current.publisherName().equals(publisher.get().name())) {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Only the creator may update this incident"
+                );
+            }
+
+            Incident updated;
+
+            try 
+            {
+                // Replace editable details while preserving incident identity
+                // and metadata. Increment the version for the new state.
+                updated = new Incident(
+                        current.incidentId(),
+                        current.version() + 1,
+                        current.category(),
+                        current.location(),
+                        Severity.valueOf(request.field(2)),
+                        current.status(),
+                        request.field(3),
+                        request.field(4),
+                        current.attachment(),
+                        current.publisherName()
+                );
+            } 
+            catch (IllegalArgumentException exception) 
+            {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Invalid incident fields"
+                );
+            }
+
+            // Reject if another operation changed the incident since we read it.
+            if (!store.replaceIfCurrent(current, updated)) 
+            {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Incident changed; retry with a new request"
+                );
+            }
+            
+            // Emit the update only after successful storage.
+            eventSink.onUpdated(updated);
+
+            return ControlMessage.of(
+                    MessageType.ALERT_UPDATED,
+                    requestNumber,
+                    updated.incidentId(),
+                    Long.toString(updated.version())
+            );
+
     }
 }
