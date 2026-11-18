@@ -14,7 +14,13 @@ public interface IncidentStorePort {
 
     boolean replaceIfCurrent(Incident current, Incident updated);
 
+    /**
+     * Atomically union names into an existing incident's recipient history.
+     * Reject unknown IDs. Preserve history through updates and closure.
+     * Production adapters must persist history with incident state.
+     */
     void recordRecipients(String incidentId, Set<String> clientNames);
     
+    /** Return an immutable snapshot, or an empty set for an unknown ID. */
     Set<String> findRecipients(String incidentId);
 }

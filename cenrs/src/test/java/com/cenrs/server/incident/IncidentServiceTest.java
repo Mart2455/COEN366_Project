@@ -6,6 +6,9 @@ import static org.junit.Assert.assertTrue;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -18,6 +21,7 @@ import com.cenrs.contract.Severity;
 import com.cenrs.contract.fake.FakePorts;
 import com.cenrs.contract.port.IncidentEventSinkPort;
 import com.cenrs.contract.port.IncidentIdGeneratorPort;
+import com.cenrs.contract.port.IncidentStorePort;
 import com.cenrs.protocol.ControlMessage;
 import com.cenrs.protocol.MessageType;
 
@@ -551,9 +555,8 @@ public class IncidentServiceTest
     public void invalidUpdateRequestNumbersAreDenied() {
         Incident original = publishOriginalIncident();
 
-        for (String number : List.of(
-                "0", "-1", "abc", "9223372036854775808"
-        )) {
+        for (String number : List.of("0", "-1", "abc", "9223372036854775808")) 
+        {
             ControlMessage invalidRequest = ControlMessage.of(
                     MessageType.UPDATE_ALERT,
                     number, "INC1", "WARNING",
@@ -572,4 +575,233 @@ public class IncidentServiceTest
             assertTrue(updatedEvents.isEmpty());
         }
     }
+
+    @Test
+    public void invalidPublishRequestNumbersAreDenied() 
+    {
+        registry.addIfAbsent(new ClientProfile(
+                "ALI", ClientRole.PUBLISHER, "127.0.0.1", 5001, 6001
+        ));
+
+        for (String number : List.of(
+                "0", "-1", "abc", "9223372036854775808"
+        )) {
+            ControlMessage invalidRequest = ControlMessage.of(
+                    MessageType.PUBLISH_ALERT,
+                    number, "FIRE", "HALL", "CRITICAL",
+                    "Fire Alarm", "Evacuate the Building", "NONE"
+            );
+
+            ControlMessage response = service.publish(invalidRequest, sender);
+
+            // Verify invalid request numbers return a correlated denial.
+            assertEquals(MessageType.ALERT_DENIED, response.type());
+            assertEquals(number, response.field(0));
+            assertEquals("Invalid request number", response.field(1));
+
+            // Verify rejection stores no incident and emits no lifecycle events.
+            assertTrue(store.findActive().isEmpty());
+            assertTrue(store.findById("INC1").isEmpty());
+            assertTrue(createdEvents.isEmpty());
+            assertTrue(updatedEvents.isEmpty());
+            assertTrue(closedEvents.isEmpty());
+        }
+    }
+
+    @Test
+    public void multiplePublicationsUseDifferentIncidentIds() 
+    {
+        registry.addIfAbsent(new ClientProfile(
+                "ALI", ClientRole.PUBLISHER, "127.0.0.1", 5001, 6001
+        ));
+        AtomicLong counter = new AtomicLong(1);
+        service = recordingService(store, () -> "INC" + counter.getAndIncrement());
+
+        ControlMessage first = service.publish(request, sender);
+        ControlMessage second = service.publish(ControlMessage.of(
+                MessageType.PUBLISH_ALERT,
+                "2", "FIRE", "HALL", "WARNING",
+                "Second incident", "Stay outside", "map.pdf"
+        ), sender);
+
+        // Verify publications use separate IDs supplied by the injected generator.
+        assertEquals(MessageType.ALERT_ACCEPTED, first.type());
+        assertEquals(MessageType.ALERT_ACCEPTED, second.type());
+        assertEquals("INC1", first.field(1));
+        assertEquals("INC2", second.field(1));
+        // Verify both incidents retain their own attachment metadata.
+        assertEquals(2, store.findActive().size());
+        assertEquals("NONE", store.findById("INC1").orElseThrow().attachment());
+        assertEquals("map.pdf", store.findById("INC2").orElseThrow().attachment());
+        // Verify one created event was emitted for each accepted publication.
+        assertEquals(2, createdEvents.size());
+    }
+
+    @Test
+    public void duplicateGeneratedIdDoesNotOverwriteIncident() 
+    {
+        Incident original = publishOriginalIncident();
+        ControlMessage response = service.publish(ControlMessage.of(
+                MessageType.PUBLISH_ALERT,
+                "2", "FIRE", "HALL", "WARNING",
+                "Second incident", "Different description", "map.pdf"
+        ), sender);
+
+        // The fixture generator returns INC1 again; the existing incident must win.
+        assertEquals(MessageType.ALERT_DENIED, response.type());
+        assertEquals("2", response.field(0));
+        assertEquals(original, store.findById("INC1").orElseThrow());
+        assertEquals(1, store.findActive().size());
+        // Verify the rejected collision produces no second creation event.
+        assertEquals(1, createdEvents.size());
+    }
+
+    @Test
+    public void recipientHistorySurvivesUpdateAndClosure() 
+    {
+        publishOriginalIncident();
+        store.recordRecipients("INC1", Set.of("Alice", "Bob"));
+        Set<String> earlierSnapshot = store.findRecipients("INC1");
+
+        ControlMessage updateResponse = service.update(ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING", "Fire controlled", "Remain outside"
+        ), sender);
+
+        // Verify updating the incident does not erase prior recipients.
+        assertEquals(MessageType.ALERT_UPDATED, updateResponse.type());
+        assertEquals(Set.of("Alice", "Bob"), store.findRecipients("INC1"));
+        store.recordRecipients("INC1", Set.of("Bob", "Carol"));
+
+        ControlMessage closeResponse = service.close(ControlMessage.of(
+                MessageType.CLOSE_ALERT, "3", "INC1", "Building reopened"
+        ), sender);
+
+        // Verify closure retains the union of initial and update recipients.
+        assertEquals(MessageType.ALERT_CLOSED, closeResponse.type());
+        assertEquals(Set.of("Alice", "Bob", "Carol"), store.findRecipients("INC1"));
+        // Verify an earlier returned snapshot is not changed by later recording.
+        assertEquals(Set.of("Alice", "Bob"), earlierSnapshot);
+        // Verify closure after an update advances to version three.
+        Incident closed = store.findById("INC1").orElseThrow();
+        assertEquals(IncidentStatus.CLOSED, closed.status());
+        assertEquals(3L, closed.version());
+        assertEquals("ALI", closed.publisherName());
+    }
+
+    @Test
+    public void concurrentUpdateIsNotOverwritten() 
+    {
+        assertCompetingChangeIsPreserved(false);
+    }
+
+    @Test
+    public void concurrentChangePreventsStaleClosure() 
+    {
+        assertCompetingChangeIsPreserved(true);
+    }
+
+    private void assertCompetingChangeIsPreserved(boolean closing) 
+    {
+        Incident original = publishOriginalIncident();
+        Incident winner = new Incident(
+                original.incidentId(), 2,
+                original.category(), original.location(), Severity.INFO,
+                IncidentStatus.ACTIVE, "Newer state", "Another operation committed",
+                original.attachment(), original.publisherName()
+        );
+        store.recordRecipients("INC1", Set.of("Alice"));
+        service = recordingService(storeWithCompetingReplacement(winner), () -> "INC2");
+
+        ControlMessage response = closing
+                ? service.close(ControlMessage.of(
+                        MessageType.CLOSE_ALERT, "2", "INC1", "Resolved"
+                ), sender)
+                : service.update(ControlMessage.of(
+                        MessageType.UPDATE_ALERT, "2", "INC1", "WARNING",
+                        "Stale update", "Old information"
+                ), sender);
+
+        // Verify a stale operation is denied and cannot overwrite the newer state.
+        assertEquals(MessageType.ALERT_DENIED, response.type());
+        assertEquals("2", response.field(0));
+        assertEquals("Incident changed; retry with a new request", response.field(1));
+        assertEquals(winner, store.findById("INC1").orElseThrow());
+        // Verify recipient history also survives the competing replacement.
+        assertEquals(Set.of("Alice"), store.findRecipients("INC1"));
+        // Verify unsuccessful transitions do not emit downstream lifecycle events.
+        assertTrue(updatedEvents.isEmpty());
+        assertTrue(closedEvents.isEmpty());
+        assertTrue(closureReasons.isEmpty());
+    }
+
+    private IncidentStorePort storeWithCompetingReplacement(Incident winner) 
+    {
+        return new IncidentStorePort() 
+        {
+            @Override
+            public boolean create(Incident incident) 
+            {
+                return store.create(incident);
+            }
+
+            @Override
+            public Optional<Incident> findById(String id)
+            {
+                return store.findById(id);
+            }
+
+            @Override
+            public List<Incident> findActive() 
+            {
+                return store.findActive();
+            }
+
+            @Override
+            public void recordRecipients(String id, Set<String> names) 
+            {
+                store.recordRecipients(id, names);
+            }
+
+            @Override
+            public Set<String> findRecipients(String id) 
+            {
+                return store.findRecipients(id);
+            }
+
+            @Override
+            public boolean replaceIfCurrent(Incident current, Incident replacement) 
+            {
+                // Deterministically commit a competing operation after lookup.
+                assertTrue("Competing change must commit first",
+                        store.replaceIfCurrent(current, winner));
+                return store.replaceIfCurrent(current, replacement);
+            }
+        };
+    }
+
+    private IncidentService recordingService(IncidentStorePort incidentStore, IncidentIdGeneratorPort generator) 
+    {
+        return new IncidentService(incidentStore, registry, generator, new IncidentEventSinkPort() 
+        {
+                    @Override
+                    public void onCreated(Incident incident) 
+                    {
+                        createdEvents.add(incident);
+                    }
+
+                    @Override
+                    public void onUpdated(Incident incident) 
+                    {
+                        updatedEvents.add(incident);
+                    }
+
+                    @Override
+                    public void onClosed(Incident incident, String reason) 
+                    {
+                        closedEvents.add(incident);
+                        closureReasons.add(reason);
+                    }
+                });
+        }
 }

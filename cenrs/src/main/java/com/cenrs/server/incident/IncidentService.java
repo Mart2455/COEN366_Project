@@ -38,6 +38,18 @@ public class IncidentService {
     public ControlMessage publish(ControlMessage request , InetSocketAddress sender)
     {
 
+        String requestNumber = request.field(0);
+
+        // Reject invalid request numbers before allocating an ID or changing state.
+        if (!validRequestNumber(requestNumber)) 
+        {
+            return ControlMessage.of(
+                    MessageType.ALERT_DENIED,
+                    requestNumber,
+                    "Invalid request number"
+            );
+        }
+
         //  see if client is registed
         var publisher = registry.findAll().stream().filter(client -> client.ipAddress().equals(sender.getAddress().getHostAddress()) 
                                                           && client.udpPort() == sender.getPort()).findFirst();
