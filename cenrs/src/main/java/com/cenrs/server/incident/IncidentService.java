@@ -199,4 +199,103 @@ public class IncidentService {
             );
 
     }
+
+
+    public ControlMessage close(ControlMessage request, InetSocketAddress sender) 
+    {
+        if (request.type() != MessageType.CLOSE_ALERT) 
+        {
+            throw new IllegalArgumentException("Expected CLOSE_ALERT");
+        }
+
+        String requestNumber = request.field(0);
+        String incidentId = request.field(1);
+        String reason = request.field(2);
+
+        try 
+        {
+            if (Long.parseLong(requestNumber) <= 0) 
+            {
+                throw new NumberFormatException();
+            }
+        } 
+        catch (NumberFormatException exception) 
+        {
+            return closeDenied(requestNumber, "Invalid request number");
+        }
+
+        var publisher = registry.findAll().stream()
+                .filter(client -> sender.getAddress() != null
+                        && client.ipAddress().equals(sender.getAddress().getHostAddress())
+                        && client.udpPort() == sender.getPort())
+                .findFirst();
+
+        if (publisher.isEmpty()) 
+        {
+            return closeDenied(requestNumber, "Client is not registered");
+        }
+        if (!publisher.get().role().canPublish()) 
+        {
+            return closeDenied(requestNumber, "Unauthorized role");
+        }
+
+        var existing = store.findById(incidentId);
+        if (existing.isEmpty()) 
+        {
+            return closeDenied(requestNumber, "Unknown incident");
+        }
+
+        Incident current = existing.get();
+        if (current.status() != IncidentStatus.ACTIVE) 
+        {
+            return closeDenied(requestNumber, "Incident is already closed");
+        }
+        if (!current.publisherName().equals(publisher.get().name())) 
+        {
+            return closeDenied(requestNumber, "Only the creator may close this incident");
+        }
+
+        // Validate the reason before changing any stored state.
+        if (reason.isBlank() || reason.contains("|") || reason.contains("\r")
+                || reason.contains("\n")
+                || reason.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 256) 
+        {
+            return closeDenied(requestNumber, "Invalid closure reason");
+        }
+
+        long nextVersion;
+        try 
+        {
+            nextVersion = Math.incrementExact(current.version());
+        } 
+        catch (ArithmeticException exception) 
+        {
+            return closeDenied(requestNumber, "Incident version limit reached");
+        }
+
+        // Preserve the incident's details and metadata; closure is not deletion.
+        Incident closed = new Incident(
+                current.incidentId(), nextVersion,
+                current.category(), current.location(), current.severity(),
+                IncidentStatus.CLOSED, current.title(), current.description(),
+                current.attachment(), current.publisherName()
+        );
+
+        // Prevent closure from overwriting a concurrent update or closure.
+        if (!store.replaceIfCurrent(current, closed)) 
+        {
+            return closeDenied(requestNumber, "Incident changed; retry with a new request");
+        }
+
+        // Pass the reason to notification routing for the ALL_CLEAR message.
+        eventSink.onClosed(closed, reason);
+        return ControlMessage.of(
+                MessageType.ALERT_CLOSED, requestNumber, closed.incidentId()
+        );
+    }
+
+    private ControlMessage closeDenied(String requestNumber, String reason) 
+    {
+        return ControlMessage.of(MessageType.ALERT_DENIED, requestNumber, reason);
+    }
 }

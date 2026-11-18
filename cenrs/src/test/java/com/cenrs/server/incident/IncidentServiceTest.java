@@ -27,6 +27,8 @@ public class IncidentServiceTest
     private FakePorts.Incidents store;
     private List<Incident> createdEvents;
     private List<Incident> updatedEvents;
+    private List<Incident> closedEvents;
+    private List<String> closureReasons;
     private IncidentService service;
     private ControlMessage request;
     private InetSocketAddress sender;
@@ -38,22 +40,29 @@ public class IncidentServiceTest
         store = new FakePorts.Incidents();
         createdEvents = new ArrayList<>();
         updatedEvents = new ArrayList<>();
+        closedEvents = new ArrayList<>();
+        closureReasons = new ArrayList<>();
 
         IncidentIdGeneratorPort idGenerator = () -> "INC1";
 
         IncidentEventSinkPort eventSink = new IncidentEventSinkPort() {
             @Override
-            public void onCreated(Incident incident) {
+            public void onCreated(Incident incident) 
+            {
                 createdEvents.add(incident);
             }
 
             @Override
-            public void onUpdated(Incident incident) {
+            public void onUpdated(Incident incident) 
+            {
                 updatedEvents.add(incident);
             }
 
             @Override
-            public void onClosed(Incident incident) {
+            public void onClosed(Incident incident, String reason) 
+            {
+                closedEvents.add(incident);
+                closureReasons.add(reason);
             }
         };
 
@@ -230,7 +239,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void differentPublisherCannotUpdateIncident() {
+    public void differentPublisherCannotUpdateIncident() 
+    {
         Incident original = publishOriginalIncident();
         registry.addIfAbsent(new ClientProfile(
                 "BOB", ClientRole.PUBLISHER, "127.0.0.1", 5002, 6002
@@ -250,7 +260,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void unknownIncidentCannotBeUpdated() {
+    public void unknownIncidentCannotBeUpdated() 
+    {
         Incident original = publishOriginalIncident();
         ControlMessage updateRequest = ControlMessage.of(
                 MessageType.UPDATE_ALERT,
@@ -268,7 +279,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void closedIncidentCannotBeUpdated() {
+    public void closedIncidentCannotBeUpdated() 
+    {
         Incident original = publishOriginalIncident();
         // Seed a closed incident directly; closure implementation is not required.
         Incident closed = new Incident(
@@ -307,7 +319,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void blankUpdateTitleIsDenied() {
+    public void blankUpdateTitleIsDenied() 
+    {
         Incident original = publishOriginalIncident();
         ControlMessage updateRequest = ControlMessage.of(
                 MessageType.UPDATE_ALERT,
@@ -322,7 +335,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void oversizedUpdateDescriptionIsDenied() {
+    public void oversizedUpdateDescriptionIsDenied() 
+    {
         Incident original = publishOriginalIncident();
         ControlMessage updateRequest = ControlMessage.of(
                 MessageType.UPDATE_ALERT,
@@ -336,7 +350,8 @@ public class IncidentServiceTest
         assertEquals("Invalid incident fields", response.field(1));
     }
 
-    private Incident publishOriginalIncident() {
+    private Incident publishOriginalIncident() 
+    {
         registry.addIfAbsent(new ClientProfile(
                 "ALI", ClientRole.PUBLISHER, "127.0.0.1", 5001, 6001
         ));
@@ -358,5 +373,143 @@ public class IncidentServiceTest
 
         // Verify rejected updates produce no downstream notification event.
         assertTrue(updatedEvents.isEmpty());
+    }
+
+    @Test
+    public void creatorCanCloseActiveIncident() 
+    {
+        Incident original = publishOriginalIncident();
+        ControlMessage closeRequest = ControlMessage.of(
+                MessageType.CLOSE_ALERT, "2", "INC1", "Building reopened"
+        );
+
+        ControlMessage response = service.close(closeRequest, sender);
+
+        // Verify closure acceptance includes the original request number and ID.
+        assertEquals(MessageType.ALERT_CLOSED, response.type());
+        assertEquals("2", response.field(0));
+        assertEquals("INC1", response.field(1));
+
+        Incident closed = store.findById("INC1").orElseThrow();
+        // Verify closure increments the version, preserves all details, and stores CLOSED.
+        Incident expected = new Incident(
+                original.incidentId(), 2, original.category(), original.location(),
+                original.severity(), IncidentStatus.CLOSED, original.title(),
+                original.description(), original.attachment(), original.publisherName()
+        );
+        assertEquals(expected, closed);
+        // Verify closed history remains stored but is excluded from active incidents.
+        assertTrue(store.findActive().isEmpty());
+        // Verify notification routing receives exactly one closure with its reason.
+        assertEquals(List.of(closed), closedEvents);
+        assertEquals(List.of("Building reopened"), closureReasons);
+        // Verify closure is not also reported as an update.
+        assertTrue(updatedEvents.isEmpty());
+    }
+
+    @Test
+    public void differentPublisherCannotCloseIncident() {
+        Incident original = publishOriginalIncident();
+        registry.addIfAbsent(new ClientProfile(
+                "BOB", ClientRole.PUBLISHER, "127.0.0.1", 5002, 6002
+        ));
+        ControlMessage response = service.close(
+                ControlMessage.of(MessageType.CLOSE_ALERT, "2", "INC1", "Resolved"),
+                new InetSocketAddress("127.0.0.1", 5002)
+        );
+        assertDeniedClosureLeavesIncidentUnchanged(response, original);
+        // Verify the registered publisher is rejected specifically for ownership.
+        assertEquals("Only the creator may close this incident", response.field(1));
+    }
+
+    @Test
+    public void unregisteredClientCannotCloseIncident() {
+        Incident original = publishOriginalIncident();
+        ControlMessage response = service.close(
+                ControlMessage.of(MessageType.CLOSE_ALERT, "2", "INC1", "Resolved"),
+                new InetSocketAddress("127.0.0.1", 5999)
+        );
+        assertDeniedClosureLeavesIncidentUnchanged(response, original);
+        // Verify an unknown endpoint is rejected before any closure is accepted.
+        assertEquals("Client is not registered", response.field(1));
+    }
+
+    @Test
+    public void subscriberCannotCloseIncident() {
+        Incident original = publishOriginalIncident();
+        registry.addIfAbsent(new ClientProfile(
+                "BOB", ClientRole.SUBSCRIBER, "127.0.0.1", 5002, 6002
+        ));
+        ControlMessage response = service.close(
+                ControlMessage.of(MessageType.CLOSE_ALERT, "2", "INC1", "Resolved"),
+                new InetSocketAddress("127.0.0.1", 5002)
+        );
+        assertDeniedClosureLeavesIncidentUnchanged(response, original);
+        // Verify subscriber role cannot close an incident.
+        assertEquals("Unauthorized role", response.field(1));
+    }
+
+    @Test
+    public void unknownIncidentCannotBeClosed() {
+        Incident original = publishOriginalIncident();
+        ControlMessage response = service.close(
+                ControlMessage.of(MessageType.CLOSE_ALERT, "2", "MISSING", "Resolved"),
+                sender
+        );
+        assertDeniedClosureLeavesIncidentUnchanged(response, original);
+        // Verify an unknown ID is rejected without creating a closed record.
+        assertEquals("Unknown incident", response.field(1));
+        assertTrue(store.findById("MISSING").isEmpty());
+    }
+
+    @Test
+    public void alreadyClosedIncidentCannotBeClosedAgain() 
+    {
+        publishOriginalIncident();
+        ControlMessage closeRequest = ControlMessage.of(
+                MessageType.CLOSE_ALERT, "2", "INC1", "Resolved"
+        );
+        service.close(closeRequest, sender);
+        Incident closed = store.findById("INC1").orElseThrow();
+        closedEvents.clear();
+        closureReasons.clear();
+
+        ControlMessage response = service.close(closeRequest, sender);
+
+        assertDeniedClosureLeavesIncidentUnchanged(response, closed);
+        // Verify a second closure does not increment the version or emit another event.
+        assertEquals("Incident is already closed", response.field(1));
+    }
+
+    @Test
+    public void invalidClosureReasonsAreDenied() 
+    {
+        Incident original = publishOriginalIncident();
+        String[] invalidReasons = {
+                "", "   ", "Bad|reason", "Bad\nreason", "Bad\rreason",
+                "x".repeat(257), "é".repeat(129)
+        };
+        for (String reason : invalidReasons) {
+            ControlMessage response = service.close(
+                    ControlMessage.of(MessageType.CLOSE_ALERT, "2", "INC1", reason),
+                    sender
+            );
+            assertDeniedClosureLeavesIncidentUnchanged(response, original);
+            // Verify reason validation covers whitespace, delimiters, and UTF-8 byte size.
+            assertEquals("Invalid closure reason", response.field(1));
+        }
+    }
+
+    private void assertDeniedClosureLeavesIncidentUnchanged(
+            ControlMessage response, Incident expected
+    ) {
+        // Verify denial is correlated with the closure request.
+        assertEquals(MessageType.ALERT_DENIED, response.type());
+        assertEquals("2", response.field(0));
+        // Verify rejection preserves all incident fields, including version and status.
+        assertEquals(expected, store.findById(expected.incidentId()).orElseThrow());
+        // Verify rejection emits no closure event or reason.
+        assertTrue(closedEvents.isEmpty());
+        assertTrue(closureReasons.isEmpty());
     }
 }

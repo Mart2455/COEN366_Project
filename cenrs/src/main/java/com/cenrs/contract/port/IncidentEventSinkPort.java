@@ -8,5 +8,6 @@ public interface IncidentEventSinkPort {
 
     void onUpdated(Incident incident);
 
-    void onClosed(Incident incident);
+    /** Receives the closed state and the validated reason for ALL_CLEAR routing. */
+    void onClosed(Incident incident, String reason);
 }

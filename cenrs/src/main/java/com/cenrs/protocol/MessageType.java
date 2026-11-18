@@ -14,7 +14,9 @@ public enum MessageType {
     ALERT_ACCEPTED("ALERT_ACCEPTED" , 2),
     ALERT_DENIED("ALERT_DENIED" , 2),
     UPDATE_ALERT("UPDATE_ALERT", 5),
-    ALERT_UPDATED("ALERT_UPDATED" , 3);
+    ALERT_UPDATED("ALERT_UPDATED" , 3),
+    CLOSE_ALERT("CLOSE_ALERT", 3),
+    ALERT_CLOSED("ALERT_CLOSED", 2);
 
     private final String wireName;
     private final int fieldCount;
