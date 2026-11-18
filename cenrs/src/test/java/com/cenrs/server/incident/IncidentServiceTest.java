@@ -228,4 +228,135 @@ public class IncidentServiceTest
         assertEquals(1, updatedEvents.size());
         assertEquals(updated, updatedEvents.get(0));
     }
+
+    @Test
+    public void differentPublisherCannotUpdateIncident() {
+        Incident original = publishOriginalIncident();
+        registry.addIfAbsent(new ClientProfile(
+                "BOB", ClientRole.PUBLISHER, "127.0.0.1", 5002, 6002
+        ));
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING", "Fire controlled", "Remain outside"
+        );
+
+        ControlMessage response = service.update(
+                updateRequest, new InetSocketAddress("127.0.0.1", 5002)
+        );
+
+        // Verify a registered publisher cannot modify another creator's incident.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, original);
+        assertEquals("Only the creator may update this incident", response.field(1));
+    }
+
+    @Test
+    public void unknownIncidentCannotBeUpdated() {
+        Incident original = publishOriginalIncident();
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "MISSING", "WARNING", "Fire controlled", "Remain outside"
+        );
+
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify rejection does not modify the existing incident or emit an update.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, original);
+        assertEquals("Unknown incident", response.field(1));
+
+        // Verify an update cannot create the unknown incident.
+        assertTrue(store.findById("MISSING").isEmpty());
+    }
+
+    @Test
+    public void closedIncidentCannotBeUpdated() {
+        Incident original = publishOriginalIncident();
+        // Seed a closed incident directly; closure implementation is not required.
+        Incident closed = new Incident(
+                original.incidentId(), 2,
+                original.category(), original.location(), original.severity(),
+                IncidentStatus.CLOSED, original.title(), original.description(),
+                original.attachment(), original.publisherName()
+        );
+        assertTrue("Test fixture must contain the closed incident",
+                store.replaceIfCurrent(original, closed));
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING", "Fire controlled", "Remain outside"
+        );
+
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify even the creator cannot edit a closed incident or emit an update.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, closed);
+        assertEquals("Incident is closed", response.field(1));
+    }
+
+    @Test
+    public void invalidUpdateSeverityIsDenied() {
+        Incident original = publishOriginalIncident();
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "INVALID", "Fire controlled", "Remain outside"
+        );
+
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify invalid input is denied without changing state or emitting an update.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, original);
+        assertEquals("Invalid incident fields", response.field(1));
+    }
+
+    @Test
+    public void blankUpdateTitleIsDenied() {
+        Incident original = publishOriginalIncident();
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING", "   ", "Remain outside"
+        );
+
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify invalid input is denied without changing state or emitting an update.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, original);
+        assertEquals("Invalid incident fields", response.field(1));
+    }
+
+    @Test
+    public void oversizedUpdateDescriptionIsDenied() {
+        Incident original = publishOriginalIncident();
+        ControlMessage updateRequest = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                "2", "INC1", "WARNING", "Fire controlled", "x".repeat(1025)
+        );
+
+        ControlMessage response = service.update(updateRequest, sender);
+
+        // Verify invalid input is denied without changing state or emitting an update.
+        assertDeniedUpdateLeavesIncidentUnchanged(response, original);
+        assertEquals("Invalid incident fields", response.field(1));
+    }
+
+    private Incident publishOriginalIncident() {
+        registry.addIfAbsent(new ClientProfile(
+                "ALI", ClientRole.PUBLISHER, "127.0.0.1", 5001, 6001
+        ));
+        ControlMessage response = service.publish(request, sender);
+        assertEquals("Test fixture publication must succeed",
+                MessageType.ALERT_ACCEPTED, response.type());
+        return store.findById("INC1").orElseThrow();
+    }
+
+    private void assertDeniedUpdateLeavesIncidentUnchanged(
+            ControlMessage response, Incident expected
+    ) {
+        // Verify denial is correlated with the original update request.
+        assertEquals(MessageType.ALERT_DENIED, response.type());
+        assertEquals("2", response.field(0));
+
+        // Verify all stored fields, including version and status, remain unchanged.
+        assertEquals(expected, store.findById(expected.incidentId()).orElseThrow());
+
+        // Verify rejected updates produce no downstream notification event.
+        assertTrue(updatedEvents.isEmpty());
+    }
 }
