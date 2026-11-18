@@ -17,6 +17,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Objects;
 import java.util.ResourceBundle.Control;
+import java.util.Set;
 
 
 
@@ -98,9 +99,19 @@ public class IncidentService {
 
         String requestNumber = request.field(0);
 
+        // Reject invalid request numbers before looking up or changing state.
+        if (!validRequestNumber(requestNumber)) 
+        {
+            return ControlMessage.of(
+                    MessageType.ALERT_DENIED,
+                    requestNumber,
+                    "Invalid request number"
+            );
+        }
+
+
         String incidentId = request.field(1);
 
-        sender.getAddress();
         // FInd registered client with UDP endpoint
         var publisher = registry.findAll().stream().filter(client -> 
             client.ipAddress().equals(sender.getAddress().getHostAddress()) && 
@@ -115,6 +126,16 @@ public class IncidentService {
                 MessageType.ALERT_DENIED,
                 requestNumber,
                 "Client is not registered"
+                );
+            }
+
+            // Check that the registered client has a publisher-capable role.
+            if (!publisher.get().role().canPublish()) 
+            {
+                return ControlMessage.of(
+                        MessageType.ALERT_DENIED,
+                        requestNumber,
+                        "Unauthorized role"
                 );
             }
 
@@ -294,8 +315,22 @@ public class IncidentService {
         );
     }
 
+    private boolean validRequestNumber(String value) 
+    {
+        try 
+        {
+            return Long.parseLong(value) > 0;
+        } 
+        catch (NumberFormatException exception) 
+        {
+            return false;
+        }
+    }
+
     private ControlMessage closeDenied(String requestNumber, String reason) 
     {
         return ControlMessage.of(MessageType.ALERT_DENIED, requestNumber, reason);
     }
+
+    
 }

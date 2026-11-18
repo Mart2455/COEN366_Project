@@ -304,7 +304,8 @@ public class IncidentServiceTest
     }
 
     @Test
-    public void invalidUpdateSeverityIsDenied() {
+    public void invalidUpdateSeverityIsDenied() 
+    {
         Incident original = publishOriginalIncident();
         ControlMessage updateRequest = ControlMessage.of(
                 MessageType.UPDATE_ALERT,
@@ -361,9 +362,9 @@ public class IncidentServiceTest
         return store.findById("INC1").orElseThrow();
     }
 
-    private void assertDeniedUpdateLeavesIncidentUnchanged(
-            ControlMessage response, Incident expected
-    ) {
+    private void assertDeniedUpdateLeavesIncidentUnchanged(ControlMessage response, 
+                                                           Incident expected) 
+    {
         // Verify denial is correlated with the original update request.
         assertEquals(MessageType.ALERT_DENIED, response.type());
         assertEquals("2", response.field(0));
@@ -500,9 +501,8 @@ public class IncidentServiceTest
         }
     }
 
-    private void assertDeniedClosureLeavesIncidentUnchanged(
-            ControlMessage response, Incident expected
-    ) {
+    private void assertDeniedClosureLeavesIncidentUnchanged(ControlMessage response, Incident expected) 
+    {
         // Verify denial is correlated with the closure request.
         assertEquals(MessageType.ALERT_DENIED, response.type());
         assertEquals("2", response.field(0));
@@ -511,5 +511,65 @@ public class IncidentServiceTest
         // Verify rejection emits no closure event or reason.
         assertTrue(closedEvents.isEmpty());
         assertTrue(closureReasons.isEmpty());
+    }
+
+
+    @Test
+    public void closingIncidentPreservesRecipientHistory() 
+    {
+        publishOriginalIncident();
+
+        // Record two recipients, then add another with an overlapping name.
+        store.recordRecipients("INC1", java.util.Set.of("Alice", "Bob"));
+        store.recordRecipients("INC1", java.util.Set.of("Bob", "Carol"));
+
+        ControlMessage response = service.close(
+                ControlMessage.of(
+                        MessageType.CLOSE_ALERT,
+                        "2", "INC1", "Building reopened"
+                        ),
+                        sender
+                );
+
+        // Verify the creator successfully closed the incident.
+        assertEquals(MessageType.ALERT_CLOSED, response.type());
+
+        // Verify all previous recipients remain recorded without duplicates.
+        assertEquals(
+                java.util.Set.of("Alice", "Bob", "Carol"),
+                store.findRecipients("INC1")
+        );
+
+                // Verify the incident remains stored as CLOSED.
+        assertEquals(
+                IncidentStatus.CLOSED,
+                store.findById("INC1").orElseThrow().status()
+        );
+     }
+
+    @Test
+    public void invalidUpdateRequestNumbersAreDenied() {
+        Incident original = publishOriginalIncident();
+
+        for (String number : List.of(
+                "0", "-1", "abc", "9223372036854775808"
+        )) {
+            ControlMessage invalidRequest = ControlMessage.of(
+                    MessageType.UPDATE_ALERT,
+                    number, "INC1", "WARNING",
+                    "Fire controlled", "Remain outside"
+            );
+
+            ControlMessage response = service.update(invalidRequest, sender);
+
+            // Verify invalid request numbers return a correlated denial.
+            assertEquals(MessageType.ALERT_DENIED, response.type());
+            assertEquals(number, response.field(0));
+            assertEquals("Invalid request number", response.field(1));
+
+            // Verify rejection preserves every stored field and emits no update.
+            assertEquals(original, store.findById("INC1").orElseThrow());
+            assertTrue(updatedEvents.isEmpty());
+        }
     }
 }
