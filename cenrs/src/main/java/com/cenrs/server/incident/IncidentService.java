@@ -63,7 +63,7 @@ public class IncidentService {
         // Need to check if publisher can publish
         if (!publisher.get().role().canPublish())
         {
-            return ControlMessage.of(MessageType.ALERT_DENIED, request.field(0) , "Uauthorized role");
+            return ControlMessage.of(MessageType.ALERT_DENIED, request.field(0) , "Unauthorized role");
         }
 
         // No more checks, we can create the incident
