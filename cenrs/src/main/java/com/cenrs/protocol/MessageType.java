@@ -9,8 +9,17 @@ public enum MessageType {
     SUBSCRIBE("SUBSCRIBE", 3),
     SUBSCRIBED("SUBSCRIBED", 1),
     SUBSCRIPTION_DENIED("SUBSCRIPTION-DENIED", 2),
-    UNSUBSCRIBE("UNSUBSCRIBE", 3);
+    UNSUBSCRIBE("UNSUBSCRIBE", 3), 
+    PUBLISH_ALERT("PUBLISH_ALERT" , 7), // 7 fields
+    ALERT_ACCEPTED("ALERT_ACCEPTED" , 2),
+    ALERT_DENIED("ALERT_DENIED" , 2),
+    UPDATE_ALERT("UPDATE_ALERT", 5),
+    ALERT_UPDATED("ALERT_UPDATED" , 3),
+    CLOSE_ALERT("CLOSE_ALERT", 3),
+    ALERT_CLOSED("ALERT_CLOSED", 2),
+    ALL_CLEAR("ALL_CLEAR" , 4);
 
+    
     private final String wireName;
     private final int fieldCount;
 

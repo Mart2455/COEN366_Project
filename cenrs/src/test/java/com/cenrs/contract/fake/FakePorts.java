@@ -137,6 +137,38 @@ public final class FakePorts {
                 updated
             );
         }
+
+        private final Map<String, Set<String>> recipients = new ConcurrentHashMap<>();
+
+        @Override 
+        public void recordRecipients(String incidentId , Set<String> clientNames)
+        {
+            // Verify that the incident actually exists
+            if (!incidents.containsKey(incidentId))
+            {
+                throw new IllegalArgumentException("Unkown incident.");
+            }
+
+            // Record the recipients for the incident
+            Set<String> names = Set.copyOf(clientNames);
+
+            // Keep all previously notified clients and add new recipients without duplicates,
+            // so ALL_CLEAR can reach them even if they later unsubscribe.
+            recipients.compute(incidentId, (id, previous) -> {
+                Set<String> combined = new java.util.HashSet<>(
+                        previous == null ? Set.of() : previous
+                );
+                combined.addAll(names);
+                return Set.copyOf(combined);
+            });
+
+        }
+
+        @Override 
+        public Set<String> findRecipients(String incidentId) 
+        {
+            return recipients.getOrDefault(incidentId, Set.of());
+        }
     }
 
     public static final class Scheduler

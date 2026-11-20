@@ -40,7 +40,8 @@ public final class UdpMessageCodec {
     }
 
     public ControlMessage decode(byte[] datagram)
-        throws ProtocolException {
+        throws ProtocolException 
+        {
 
         if (datagram == null || datagram.length == 0) {
             throw new ProtocolException(
