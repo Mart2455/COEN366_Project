@@ -17,7 +17,8 @@ public enum MessageType {
     ALERT_UPDATED("ALERT_UPDATED" , 3),
     CLOSE_ALERT("CLOSE_ALERT", 3),
     ALERT_CLOSED("ALERT_CLOSED", 2),
-    ALL_CLEAR("ALL_CLEAR" , 4);
+    ALL_CLEAR("ALL_CLEAR" , 4),
+    ALERT_ACK("ALERT_ACK", 4);
 
     
     private final String wireName;
