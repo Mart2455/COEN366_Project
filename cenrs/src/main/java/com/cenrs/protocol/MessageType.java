@@ -18,7 +18,11 @@ public enum MessageType {
     CLOSE_ALERT("CLOSE_ALERT", 3),
     ALERT_CLOSED("ALERT_CLOSED", 2),
     ALL_CLEAR("ALL_CLEAR" , 4),
-    ALERT_ACK("ALERT_ACK", 4);
+    ALERT_ACK("ALERT_ACK", 4),
+    GET_ATTACHMENT("GET_ATTACHMENT", 4),
+    ATTACH_DATA("ATTACH_DATA", 5),
+    ATTACH_OK("ATTACH_OK", 3),
+    ATTACH_ERROR("ATTACH_ERROR", 4);
 
     
     private final String wireName;
