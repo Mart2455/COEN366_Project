@@ -22,6 +22,10 @@ public enum MessageType {
     STATUS_REPORT("STATUS_REPORT", 4),
     STATUS_RECORDED("STATUS_RECORDED", 1),
     STATUS_REJECTED("STATUS_REJECTED", 2);
+    GET_ATTACHMENT("GET_ATTACHMENT", 4),
+    ATTACH_DATA("ATTACH_DATA", 5),
+    ATTACH_OK("ATTACH_OK", 3),
+    ATTACH_ERROR("ATTACH_ERROR", 4);
 
     
     private final String wireName;
