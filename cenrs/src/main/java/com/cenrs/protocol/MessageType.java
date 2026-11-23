@@ -25,7 +25,10 @@ public enum MessageType {
     GET_ATTACHMENT("GET_ATTACHMENT", 4),
     ATTACH_DATA("ATTACH_DATA", 5),
     ATTACH_OK("ATTACH_OK", 3),
-    ATTACH_ERROR("ATTACH_ERROR", 4);
+    ATTACH_ERROR("ATTACH_ERROR", 4),
+    ATTACH_REQ("ATTACH_REQ" , 3),
+    ATTACH_INFO("ATTACH_INFO" , 6),
+    ATTACH_DENIED("ATTACH_DENIED" , 3);
 
     
     private final String wireName;
