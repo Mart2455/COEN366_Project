@@ -28,7 +28,9 @@ public enum MessageType {
     ATTACH_ERROR("ATTACH_ERROR", 4),
     ATTACH_REQ("ATTACH_REQ" , 3),
     ATTACH_INFO("ATTACH_INFO" , 6),
-    ATTACH_DENIED("ATTACH_DENIED" , 3);
+    ATTACH_DENIED("ATTACH_DENIED" , 3),
+    ALERT("ALERT" , 9),
+    ALERT_UPDATE("ALERT_UPDATE" , 6); 
 
     
     private final String wireName;
