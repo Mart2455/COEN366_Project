@@ -1,0 +1,308 @@
+package com.cenrs.client.control;
+
+import com.cenrs.contract.AlertCategory;
+import com.cenrs.contract.CampusLocation;
+import com.cenrs.contract.ClientProfile;
+import com.cenrs.contract.ClientRole;
+import com.cenrs.contract.Subscription;
+import com.cenrs.contract.fake.FakePorts;
+import com.cenrs.protocol.ControlMessage;
+import com.cenrs.protocol.MessageType;
+import com.cenrs.protocol.ProtocolException;
+import com.cenrs.protocol.UdpMessageCodec;
+import org.junit.Before;
+import org.junit.Test;
+
+import java.net.InetSocketAddress;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
+public class ClientCommandControllerTest {
+    private static final InetSocketAddress SERVER =
+            new InetSocketAddress("127.0.0.1", 5000);
+
+    private FakePorts.Transport transport;
+    private UdpMessageCodec codec;
+    private ClientControlState state;
+    private ClientCommandController controller;
+
+    @Before
+    public void setUp() {
+        transport = new FakePorts.Transport();
+        codec = new UdpMessageCodec();
+        state = new ClientControlState();
+        controller = controller(Duration.ofSeconds(1));
+    }
+
+    @Test
+    public void registrationUpdatesStateOnlyAfterAcceptedResponse()
+            throws Exception {
+        CompletableFuture<ControlMessage> future =
+                controller.register("Alice", ClientRole.BOTH);
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.REGISTER,
+                        "1",
+                        "Alice",
+                        "BOTH",
+                        "127.0.0.1",
+                        "5001",
+                        "6001"
+                ),
+                sentMessage(0)
+        );
+        assertTrue(state.profile().isEmpty());
+
+        ControlMessage accepted = ControlMessage.of(
+                MessageType.REGISTERED,
+                "1",
+                "HALL,ALL",
+                "FIRE,ALL"
+        );
+
+        assertTrue(controller.acceptResponse(accepted));
+        assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
+        assertEquals("Alice", state.profile().orElseThrow().name());
+        assertEquals(
+                List.of(CampusLocation.HALL, CampusLocation.ALL),
+                state.availableLocations()
+        );
+        assertEquals(
+                List.of(AlertCategory.FIRE, AlertCategory.ALL),
+                state.availableCategories()
+        );
+    }
+
+    @Test
+    public void deniedRegistrationLeavesStateEmpty() throws Exception {
+        CompletableFuture<ControlMessage> future =
+                controller.register("Alice", ClientRole.SUBSCRIBER);
+        ControlMessage denied = ControlMessage.of(
+                MessageType.REGISTER_DENIED,
+                "1",
+                "Name already exists"
+        );
+
+        controller.acceptResponse(denied);
+
+        assertEquals(denied, future.get(1, TimeUnit.SECONDS));
+        assertTrue(state.profile().isEmpty());
+    }
+
+    @Test
+    public void subscriptionChangesStateOnlyAfterAcceptedResponse()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+
+        CompletableFuture<ControlMessage> future = controller.subscribe(
+                CampusLocation.HALL,
+                AlertCategory.FIRE
+        );
+
+        assertTrue(state.subscriptions().isEmpty());
+        ControlMessage accepted = ControlMessage.of(
+                MessageType.SUBSCRIBED,
+                "1"
+        );
+        controller.acceptResponse(accepted);
+
+        assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
+        assertEquals(
+                java.util.Set.of(
+                        new Subscription(
+                                CampusLocation.HALL,
+                                AlertCategory.FIRE
+                        )
+                ),
+                state.subscriptions()
+        );
+    }
+
+    @Test
+    public void publisherCannotSubscribe() throws Exception {
+        registerLocally(ClientRole.PUBLISHER);
+
+        expectException(
+                IllegalStateException.class,
+                () -> controller.subscribe(
+                        CampusLocation.HALL,
+                        AlertCategory.FIRE
+                )
+        );
+        assertTrue(transport.sentMessages().isEmpty());
+    }
+
+    @Test
+    public void unsubscribeAndDeregisterUpdateLocalState()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        Subscription subscription = new Subscription(
+                CampusLocation.HALL,
+                AlertCategory.FIRE
+        );
+        state.addSubscription(subscription);
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.UNSUBSCRIBE,
+                        "1",
+                        "HALL",
+                        "FIRE"
+                ),
+                controller.unsubscribe(
+                        CampusLocation.HALL,
+                        AlertCategory.FIRE
+                )
+        );
+        assertTrue(state.subscriptions().isEmpty());
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.DE_REGISTER,
+                        "2",
+                        "Alice"
+                ),
+                controller.deregister()
+        );
+        assertTrue(state.profile().isEmpty());
+        assertTrue(state.availableLocations().isEmpty());
+        assertTrue(state.availableCategories().isEmpty());
+    }
+
+    @Test
+    public void responsesAreCorrelatedByRequestNumber()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        CompletableFuture<ControlMessage> first = controller.subscribe(
+                CampusLocation.HALL,
+                AlertCategory.FIRE
+        );
+        CompletableFuture<ControlMessage> second = controller.subscribe(
+                CampusLocation.EV,
+                AlertCategory.SECURITY
+        );
+
+        ControlMessage secondResponse = ControlMessage.of(
+                MessageType.SUBSCRIBED,
+                "2"
+        );
+        ControlMessage firstResponse = ControlMessage.of(
+                MessageType.SUBSCRIBED,
+                "1"
+        );
+
+        controller.acceptResponse(secondResponse);
+        controller.acceptResponse(firstResponse);
+
+        assertEquals(firstResponse, first.get(1, TimeUnit.SECONDS));
+        assertEquals(secondResponse, second.get(1, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void unexpectedResponseFailsTheMatchingCommand()
+            throws Exception {
+        CompletableFuture<ControlMessage> future =
+                controller.register("Alice", ClientRole.SUBSCRIBER);
+
+        assertTrue(controller.acceptResponse(ControlMessage.of(
+                MessageType.STATUS_RECORDED,
+                "1"
+        )));
+
+        ExecutionException exception = expectException(
+                ExecutionException.class,
+                () -> future.get(1, TimeUnit.SECONDS)
+        );
+        assertTrue(exception.getCause() instanceof ProtocolException);
+        assertTrue(state.profile().isEmpty());
+    }
+
+    @Test
+    public void timeoutCompletesFutureWithoutBlockingCommandCall()
+            throws Exception {
+        controller = controller(Duration.ofMillis(30));
+
+        CompletableFuture<ControlMessage> future =
+                controller.register("Alice", ClientRole.SUBSCRIBER);
+
+        assertFalse(future.isDone());
+        ExecutionException exception = expectException(
+                ExecutionException.class,
+                () -> future.get(1, TimeUnit.SECONDS)
+        );
+        assertTrue(exception.getCause() instanceof TimeoutException);
+        assertFalse(controller.acceptResponse(ControlMessage.of(
+                MessageType.REGISTERED,
+                "1",
+                "HALL",
+                "FIRE"
+        )));
+    }
+
+    private ClientCommandController controller(Duration timeout) {
+        return new ClientCommandController(
+                SERVER,
+                "127.0.0.1",
+                5001,
+                6001,
+                transport,
+                codec,
+                state,
+                timeout
+        );
+    }
+
+    private void registerLocally(ClientRole role) {
+        state.recordRegistration(
+                new ClientProfile(
+                        "Alice",
+                        role,
+                        "127.0.0.1",
+                        5001,
+                        6001
+                ),
+                List.of(CampusLocation.HALL, CampusLocation.EV),
+                List.of(AlertCategory.FIRE, AlertCategory.SECURITY)
+        );
+    }
+
+    private ControlMessage sentMessage(int index)
+            throws ProtocolException {
+        FakePorts.Transport.SentMessage sent =
+                transport.sentMessages().get(index);
+        assertEquals(SERVER, sent.destination());
+        return codec.decode(sent.message());
+    }
+
+    private static <T extends Exception> T expectException(
+            Class<T> expectedType,
+            CheckedAction action
+    ) throws Exception {
+        try {
+            action.run();
+            fail("Expected " + expectedType.getSimpleName());
+            return null;
+        } catch (Exception exception) {
+            if (!expectedType.isInstance(exception)) {
+                throw exception;
+            }
+
+            return expectedType.cast(exception);
+        }
+    }
+
+    @FunctionalInterface
+    private interface CheckedAction {
+        void run() throws Exception;
+    }
+}
