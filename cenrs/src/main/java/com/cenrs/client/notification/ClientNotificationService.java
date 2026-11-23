@@ -2,8 +2,12 @@ package com.cenrs.client.notification;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Objects;
 import java.util.ResourceBundle.Control;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import com.cenrs.contract.port.TransportPort;
@@ -22,6 +26,8 @@ public class ClientNotificationService
     private final TransportPort transport;
     private final UdpMessageCodec codec;
     private final Consumer<ControlMessage> display;
+    private final Map<String, Long> latestVersionByIncidentId = new HashMap<>();
+    private final Set<String> closeIncidentIds = new HashSet<>();
 
 
     
@@ -56,7 +62,7 @@ public class ClientNotificationService
         };
 
         ControlMessage acknowledgement;
-        
+
         // Acknowledge retransmissions before checking for duplicate notifications.
         if (requiresAck)
         {
@@ -64,10 +70,31 @@ public class ClientNotificationService
             transport.send(serverAddress , codec.encode(acknowledgement)); // send in UDP
         }
 
+        // Need to compare the version with the incidentid version
+        // Compare the version by using long to see if version is equal, older, or newer
+        Long version = Long.parseLong(notification.field(2));
+        Long latestVersion = latestVersionByIncidentId.get(incidentId);
 
+        if (latestVersion != null && version <= latestVersion)
+        {
+            return;
+        }
 
+        latestVersionByIncidentId.put(incidentId , version); // store back new version before displaying
+        
 
+        // Next thing is to check if the notification has been cleared
 
+        if (notification.type() == MessageType.ALL_CLEAR)
+        {
+            // update the closed incident map
+            closeIncidentIds.add(incidentId);
+        }
+
+        // accept displaying  the notification
+        display.accept(notification);
     }
+
+    
 
 }
