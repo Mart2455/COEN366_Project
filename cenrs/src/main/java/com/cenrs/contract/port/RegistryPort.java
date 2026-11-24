@@ -12,4 +12,25 @@ public interface RegistryPort {
     List<ClientProfile> findAll();
 
     boolean remove(String name);
+
+    /**
+     * Adds a client restored from the snapshot as INACTIVE:
+     * it stays inactive until it registers again (see protocol.md, restart rules).
+     */
+    default boolean addInactive(ClientProfile client) {
+        return addIfAbsent(client);
+    }
+
+    /**
+     * Reactivates an inactive client that registers again after a restart,
+     * updating its endpoint. Returns false if the name is unknown or already active.
+     */
+    default boolean reactivate(ClientProfile client) {
+        return false;
+    }
+
+    /** True if the client is registered and active (not waiting to re-register). */
+    default boolean isActive(String name) {
+        return findByName(name).isPresent();
+    }
 }

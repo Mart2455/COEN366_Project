@@ -18,6 +18,12 @@ public final class ServerState
     private final Map<String, ClientProfile> clients =
             new ConcurrentHashMap<>();
 
+    // Clients restored after a restart that have not registered again yet.
+    private final Set<String> inactiveClients =
+            ConcurrentHashMap.newKeySet();
+
+    private final Object registrationLock = new Object();
+
     private final Map<String, Set<Subscription>>
             subscriptions =
             new ConcurrentHashMap<>();
@@ -47,8 +53,47 @@ public final class ServerState
     }
 
     @Override
+    public boolean addInactive(ClientProfile client) {
+        Objects.requireNonNull(client);
+
+        synchronized (registrationLock) {
+            if (clients.putIfAbsent(client.name(), client) != null) {
+                return false;
+            }
+
+            inactiveClients.add(client.name());
+            return true;
+        }
+    }
+
+    @Override
+    public boolean reactivate(ClientProfile client) {
+        Objects.requireNonNull(client);
+
+        // Check and update together, so two registrations cannot both win.
+        synchronized (registrationLock) {
+            if (!inactiveClients.contains(client.name())) {
+                return false;
+            }
+
+            clients.put(client.name(), client);
+            inactiveClients.remove(client.name());
+            return true;
+        }
+    }
+
+    @Override
+    public boolean isActive(String name) {
+        return clients.containsKey(name)
+                && !inactiveClients.contains(name);
+    }
+
+    @Override
     public boolean remove(String name) {
-        return clients.remove(name) != null;
+        synchronized (registrationLock) {
+            inactiveClients.remove(name);
+            return clients.remove(name) != null;
+        }
     }
 
     @Override

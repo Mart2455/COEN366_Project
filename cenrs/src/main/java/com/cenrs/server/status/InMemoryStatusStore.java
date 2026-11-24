@@ -3,6 +3,8 @@ package com.cenrs.server.status;
 import com.cenrs.contract.StatusReport;
 import com.cenrs.contract.port.StatusStorePort;
 
+import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,6 +54,17 @@ public final class InMemoryStatusStore
                 )
             )
         );
+    }
+
+    /** Latest report of every client for every incident. Used for persistence. */
+    public List<StatusReport> findAll() {
+        return reports.values()
+            .stream()
+            .sorted(
+                Comparator.comparing(StatusReport::incidentId)
+                    .thenComparing(StatusReport::clientName)
+            )
+            .toList();
     }
 
     private record StatusKey(
