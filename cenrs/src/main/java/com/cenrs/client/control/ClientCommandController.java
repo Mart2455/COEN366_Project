@@ -4,6 +4,9 @@ import com.cenrs.contract.AlertCategory;
 import com.cenrs.contract.CampusLocation;
 import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.ClientRole;
+import com.cenrs.contract.Incident;
+import com.cenrs.contract.IncidentStatus;
+import com.cenrs.contract.Severity;
 import com.cenrs.contract.Subscription;
 import com.cenrs.contract.port.TransportPort;
 import com.cenrs.protocol.ControlMessage;
@@ -24,10 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-
- //Builds client commands and correlates their UDP responses.
- //Socket receive loops belong to the client runtime, not this class.
-
+// Builds client commands and correlates their UDP responses.
+// Socket receive loops belong to the client runtime, not this class.
 public final class ClientCommandController {
     private final InetSocketAddress server;
     private final String advertisedIpAddress;
@@ -180,10 +181,172 @@ public final class ClientCommandController {
         return request;
     }
 
+    public CompletableFuture<ControlMessage> publish(
+            AlertCategory category,
+            CampusLocation location,
+            Severity severity,
+            String title,
+            String description,
+            String attachment
+    ) throws IOException, ProtocolException {
+        ClientProfile profile = requirePublisher();
 
-      //Completes a pending command. Returns false for notifications or late
-      //responses that do not belong to a current command.
+        Incident proposed = new Incident(
+                "PENDING",
+                1,
+                category,
+                location,
+                severity,
+                IncidentStatus.ACTIVE,
+                title,
+                description,
+                attachment,
+                profile.name()
+        );
 
+        ControlMessage request = ControlMessage.of(
+                MessageType.PUBLISH_ALERT,
+                nextRequestNumber(),
+                proposed.category().name(),
+                proposed.location().name(),
+                proposed.severity().name(),
+                proposed.title(),
+                proposed.description(),
+                proposed.attachment()
+        );
+
+        return sendAndAwait(
+                request,
+                MessageType.ALERT_ACCEPTED,
+                MessageType.ALERT_DENIED
+        ).thenApply(response -> {
+            if (response.type() == MessageType.ALERT_ACCEPTED) {
+                state.saveIncident(new Incident(
+                        response.field(1),
+                        proposed.version(),
+                        proposed.category(),
+                        proposed.location(),
+                        proposed.severity(),
+                        proposed.status(),
+                        proposed.title(),
+                        proposed.description(),
+                        proposed.attachment(),
+                        proposed.publisherName()
+                ));
+            }
+
+            return response;
+        });
+    }
+
+    public CompletableFuture<ControlMessage> update(
+            String incidentId,
+            Severity severity,
+            String title,
+            String description
+    ) throws IOException, ProtocolException {
+        ClientProfile profile = requirePublisher();
+        Incident current = state.requireIncident(incidentId);
+        requireOwnedActiveIncident(current, profile);
+
+        Incident proposed = new Incident(
+                current.incidentId(),
+                current.version() + 1,
+                current.category(),
+                current.location(),
+                severity,
+                current.status(),
+                title,
+                description,
+                current.attachment(),
+                current.publisherName()
+        );
+
+        ControlMessage request = ControlMessage.of(
+                MessageType.UPDATE_ALERT,
+                nextRequestNumber(),
+                proposed.incidentId(),
+                proposed.severity().name(),
+                proposed.title(),
+                proposed.description()
+        );
+
+        return sendAndAwait(
+                request,
+                MessageType.ALERT_UPDATED,
+                MessageType.ALERT_DENIED
+        ).thenApply(response -> {
+            if (response.type() == MessageType.ALERT_UPDATED) {
+                requireMatchingIncident(
+                        response,
+                        current.incidentId()
+                );
+
+                state.saveIncident(new Incident(
+                        proposed.incidentId(),
+                        Long.parseLong(response.field(2)),
+                        proposed.category(),
+                        proposed.location(),
+                        proposed.severity(),
+                        proposed.status(),
+                        proposed.title(),
+                        proposed.description(),
+                        proposed.attachment(),
+                        proposed.publisherName()
+                ));
+            }
+
+            return response;
+        });
+    }
+
+    public CompletableFuture<ControlMessage> close(
+            String incidentId,
+            String reason
+    ) throws IOException, ProtocolException {
+        ClientProfile profile = requirePublisher();
+        Incident current = state.requireIncident(incidentId);
+        requireOwnedActiveIncident(current, profile);
+        String requiredReason = requireText(reason, "reason");
+
+        ControlMessage request = ControlMessage.of(
+                MessageType.CLOSE_ALERT,
+                nextRequestNumber(),
+                current.incidentId(),
+                requiredReason
+        );
+
+        return sendAndAwait(
+                request,
+                MessageType.ALERT_CLOSED,
+                MessageType.ALERT_DENIED
+        ).thenApply(response -> {
+            if (response.type() == MessageType.ALERT_CLOSED) {
+                requireMatchingIncident(
+                        response,
+                        current.incidentId()
+                );
+
+                state.saveIncident(new Incident(
+                        current.incidentId(),
+                        current.version() + 1,
+                        current.category(),
+                        current.location(),
+                        current.severity(),
+                        IncidentStatus.CLOSED,
+                        current.title(),
+                        current.description(),
+                        current.attachment(),
+                        current.publisherName()
+                ));
+            }
+
+            return response;
+        });
+    }
+
+    // Completes a pending command. Returns false for notifications or late
+    // responses that do not belong to a current command.
     public boolean acceptResponse(ControlMessage response) {
         Objects.requireNonNull(response);
 
@@ -268,6 +431,61 @@ public final class ClientCommandController {
         return Arrays.stream(values.split(","))
                 .map(AlertCategory::valueOf)
                 .toList();
+    }
+
+    private ClientProfile requirePublisher() {
+        ClientProfile profile = state.requireProfile();
+
+        if (!profile.role().canPublish()) {
+            throw new IllegalStateException(
+                    "Current role cannot publish"
+            );
+        }
+
+        return profile;
+    }
+
+    private static void requireOwnedActiveIncident(
+            Incident incident,
+            ClientProfile profile
+    ) {
+        if (!incident.publisherName().equals(profile.name())) {
+            throw new IllegalStateException(
+                    "Only the original publisher can change this incident"
+            );
+        }
+
+        if (incident.status() != IncidentStatus.ACTIVE) {
+            throw new IllegalStateException(
+                    "Incident is already closed"
+            );
+        }
+    }
+
+    private static void requireMatchingIncident(
+            ControlMessage response,
+            String expectedIncidentId
+    ) {
+        if (!response.field(1).equals(expectedIncidentId)) {
+            throw new IllegalStateException(
+                    "Response incident ID does not match request"
+            );
+        }
+    }
+
+    private static String requireText(String value, String name) {
+        Objects.requireNonNull(value, name + " cannot be null");
+
+        if (value.isBlank()
+                || value.contains("|")
+                || value.contains("\r")
+                || value.contains("\n")) {
+            throw new IllegalArgumentException(
+                    name + " is blank or contains a reserved character"
+            );
+        }
+
+        return value;
     }
 
     private static int validPort(int port, String name) {
