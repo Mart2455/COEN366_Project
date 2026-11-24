@@ -1,12 +1,16 @@
 package com.cenrs.client.control;
 
+import com.cenrs.client.files.AttachmentFiles;
+import com.cenrs.client.files.download.AttachmentInfo;
 import com.cenrs.contract.AlertCategory;
 import com.cenrs.contract.CampusLocation;
 import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.ClientRole;
 import com.cenrs.contract.Incident;
 import com.cenrs.contract.IncidentStatus;
+import com.cenrs.contract.SafetyStatus;
 import com.cenrs.contract.Severity;
+import com.cenrs.contract.StatusReport;
 import com.cenrs.contract.Subscription;
 import com.cenrs.contract.port.TransportPort;
 import com.cenrs.protocol.ControlMessage;
@@ -190,7 +194,6 @@ public final class ClientCommandController {
             String attachment
     ) throws IOException, ProtocolException {
         ClientProfile profile = requirePublisher();
-
         Incident proposed = new Incident(
                 "PENDING",
                 1,
@@ -203,7 +206,6 @@ public final class ClientCommandController {
                 attachment,
                 profile.name()
         );
-
         ControlMessage request = ControlMessage.of(
                 MessageType.PUBLISH_ALERT,
                 nextRequestNumber(),
@@ -248,7 +250,6 @@ public final class ClientCommandController {
         ClientProfile profile = requirePublisher();
         Incident current = state.requireIncident(incidentId);
         requireOwnedActiveIncident(current, profile);
-
         Incident proposed = new Incident(
                 current.incidentId(),
                 current.version() + 1,
@@ -261,7 +262,6 @@ public final class ClientCommandController {
                 current.attachment(),
                 current.publisherName()
         );
-
         ControlMessage request = ControlMessage.of(
                 MessageType.UPDATE_ALERT,
                 nextRequestNumber(),
@@ -277,11 +277,7 @@ public final class ClientCommandController {
                 MessageType.ALERT_DENIED
         ).thenApply(response -> {
             if (response.type() == MessageType.ALERT_UPDATED) {
-                requireMatchingIncident(
-                        response,
-                        current.incidentId()
-                );
-
+                requireMatchingIncident(response, current.incidentId());
                 state.saveIncident(new Incident(
                         proposed.incidentId(),
                         Long.parseLong(response.field(2)),
@@ -308,7 +304,6 @@ public final class ClientCommandController {
         Incident current = state.requireIncident(incidentId);
         requireOwnedActiveIncident(current, profile);
         String requiredReason = requireText(reason, "reason");
-
         ControlMessage request = ControlMessage.of(
                 MessageType.CLOSE_ALERT,
                 nextRequestNumber(),
@@ -322,11 +317,7 @@ public final class ClientCommandController {
                 MessageType.ALERT_DENIED
         ).thenApply(response -> {
             if (response.type() == MessageType.ALERT_CLOSED) {
-                requireMatchingIncident(
-                        response,
-                        current.incidentId()
-                );
-
+                requireMatchingIncident(response, current.incidentId());
                 state.saveIncident(new Incident(
                         current.incidentId(),
                         current.version() + 1,
@@ -345,6 +336,92 @@ public final class ClientCommandController {
         });
     }
 
+    public CompletableFuture<ControlMessage> reportStatus(
+            String incidentId,
+            SafetyStatus safetyStatus
+    ) throws IOException, ProtocolException {
+        ClientProfile profile = requireSubscriber();
+        Incident incident = state.requireIncident(incidentId);
+        requireActiveIncident(incident);
+        StatusReport report = new StatusReport(
+                incident.incidentId(),
+                profile.name(),
+                safetyStatus
+        );
+        ControlMessage request = ControlMessage.of(
+                MessageType.STATUS_REPORT,
+                nextRequestNumber(),
+                report.incidentId(),
+                report.clientName(),
+                report.status().name()
+        );
+
+        return sendAndAwait(
+                request,
+                MessageType.STATUS_RECORDED,
+                MessageType.STATUS_REJECTED
+        ).thenApply(response -> {
+            // A rejected report must not replace the last accepted status.
+            if (response.type() == MessageType.STATUS_RECORDED) {
+                state.saveStatusReport(report);
+            }
+
+            return response;
+        });
+    }
+
+    public CompletableFuture<ControlMessage> discoverAttachment(
+            String incidentId,
+            String fileName
+    ) throws IOException, ProtocolException {
+        requireSubscriber();
+        Incident incident = state.requireIncident(incidentId);
+        requireActiveIncident(incident);
+        String safeFileName = AttachmentFiles.requireSafeFileName(fileName);
+
+        if (!incident.hasAttachment()
+                || !incident.attachment().equals(safeFileName)) {
+            throw new IllegalArgumentException(
+                    "File is not attached to this incident"
+            );
+        }
+
+        ControlMessage request = ControlMessage.of(
+                MessageType.ATTACH_REQ,
+                nextRequestNumber(),
+                incident.incidentId(),
+                safeFileName
+        );
+
+        return sendAndAwait(
+                request,
+                MessageType.ATTACH_INFO,
+                MessageType.ATTACH_DENIED
+        ).thenApply(response -> {
+            if (response.type() == MessageType.ATTACH_INFO) {
+                requireMatchingIncident(response, incident.incidentId());
+                AttachmentInfo info = new AttachmentInfo(
+                        response.field(0),
+                        response.field(1),
+                        response.field(2),
+                        response.field(3),
+                        Integer.parseInt(response.field(4)),
+                        response.field(5)
+                );
+
+                if (!info.fileName().equals(safeFileName)) {
+                    throw new IllegalStateException(
+                            "Response file name does not match request"
+                    );
+                }
+
+                // This stores TCP connection metadata, not the file bytes.
+                state.saveAttachmentInfo(info);
+            }
+
+            return response;
+        });
+    }
     // Completes a pending command. Returns false for notifications or late
     // responses that do not belong to a current command.
     public boolean acceptResponse(ControlMessage response) {
@@ -437,12 +514,28 @@ public final class ClientCommandController {
         ClientProfile profile = state.requireProfile();
 
         if (!profile.role().canPublish()) {
+            throw new IllegalStateException("Current role cannot publish");
+        }
+
+        return profile;
+    }
+
+    private ClientProfile requireSubscriber() {
+        ClientProfile profile = state.requireProfile();
+
+        if (!profile.role().canSubscribe()) {
             throw new IllegalStateException(
-                    "Current role cannot publish"
+                    "Current role cannot perform subscriber commands"
             );
         }
 
         return profile;
+    }
+
+    private static void requireActiveIncident(Incident incident) {
+        if (incident.status() != IncidentStatus.ACTIVE) {
+            throw new IllegalStateException("Incident is already closed");
+        }
     }
 
     private static void requireOwnedActiveIncident(
@@ -456,9 +549,7 @@ public final class ClientCommandController {
         }
 
         if (incident.status() != IncidentStatus.ACTIVE) {
-            throw new IllegalStateException(
-                    "Incident is already closed"
-            );
+            throw new IllegalStateException("Incident is already closed");
         }
     }
 

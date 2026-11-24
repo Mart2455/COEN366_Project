@@ -1,9 +1,11 @@
 package com.cenrs.client.control;
 
+import com.cenrs.client.files.download.AttachmentInfo;
 import com.cenrs.contract.AlertCategory;
 import com.cenrs.contract.CampusLocation;
 import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.Incident;
+import com.cenrs.contract.StatusReport;
 import com.cenrs.contract.Subscription;
 
 import java.util.HashMap;
@@ -21,6 +23,8 @@ public final class ClientControlState {
     private List<AlertCategory> availableCategories = List.of();
     private final Set<Subscription> subscriptions = new HashSet<>();
     private final Map<String, Incident> incidents = new HashMap<>();
+    private final Map<String, StatusReport> statusReports = new HashMap<>();
+    private final Map<String, AttachmentInfo> attachmentInfos = new HashMap<>();
 
     public synchronized Optional<ClientProfile> profile() {
         return Optional.ofNullable(profile);
@@ -46,6 +50,26 @@ public final class ClientControlState {
         return Optional.ofNullable(incidents.get(incidentId));
     }
 
+    public synchronized Map<String, StatusReport> statusReports() {
+        return Map.copyOf(statusReports);
+    }
+
+    public synchronized Optional<StatusReport> statusReport(
+            String incidentId
+    ) {
+        return Optional.ofNullable(statusReports.get(incidentId));
+    }
+
+    public synchronized Map<String, AttachmentInfo> attachmentInfos() {
+        return Map.copyOf(attachmentInfos);
+    }
+
+    public synchronized Optional<AttachmentInfo> attachmentInfo(
+            String incidentId
+    ) {
+        return Optional.ofNullable(attachmentInfos.get(incidentId));
+    }
+
     public synchronized void recordRegistration(
             ClientProfile registeredProfile,
             List<CampusLocation> locations,
@@ -56,6 +80,8 @@ public final class ClientControlState {
         availableCategories = List.copyOf(categories);
         subscriptions.clear();
         incidents.clear();
+        statusReports.clear();
+        attachmentInfos.clear();
     }
 
     public synchronized void clearRegistration() {
@@ -64,6 +90,8 @@ public final class ClientControlState {
         availableCategories = List.of();
         subscriptions.clear();
         incidents.clear();
+        statusReports.clear();
+        attachmentInfos.clear();
     }
 
     public synchronized void addSubscription(
@@ -81,6 +109,16 @@ public final class ClientControlState {
     public synchronized void saveIncident(Incident incident) {
         Incident requiredIncident = Objects.requireNonNull(incident);
         incidents.put(requiredIncident.incidentId(), requiredIncident);
+    }
+
+    public synchronized void saveStatusReport(StatusReport report) {
+        StatusReport requiredReport = Objects.requireNonNull(report);
+        statusReports.put(requiredReport.incidentId(), requiredReport);
+    }
+
+    public synchronized void saveAttachmentInfo(AttachmentInfo info) {
+        AttachmentInfo requiredInfo = Objects.requireNonNull(info);
+        attachmentInfos.put(requiredInfo.incidentId(), requiredInfo);
     }
 
     synchronized Incident requireIncident(String incidentId) {

@@ -1,12 +1,15 @@
 package com.cenrs.client.control;
 
+import com.cenrs.client.files.download.AttachmentInfo;
 import com.cenrs.contract.AlertCategory;
 import com.cenrs.contract.CampusLocation;
 import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.ClientRole;
 import com.cenrs.contract.Incident;
 import com.cenrs.contract.IncidentStatus;
+import com.cenrs.contract.SafetyStatus;
 import com.cenrs.contract.Severity;
+import com.cenrs.contract.StatusReport;
 import com.cenrs.contract.Subscription;
 import com.cenrs.contract.fake.FakePorts;
 import com.cenrs.protocol.ControlMessage;
@@ -90,7 +93,6 @@ public class ClientCommandControllerTest {
     public void deniedRegistrationLeavesStateEmpty() throws Exception {
         CompletableFuture<ControlMessage> future =
                 controller.register("Alice", ClientRole.SUBSCRIBER);
-
         ControlMessage denied = ControlMessage.of(
                 MessageType.REGISTER_DENIED,
                 "1",
@@ -114,12 +116,10 @@ public class ClientCommandControllerTest {
         );
 
         assertTrue(state.subscriptions().isEmpty());
-
         ControlMessage accepted = ControlMessage.of(
                 MessageType.SUBSCRIBED,
                 "1"
         );
-
         controller.acceptResponse(accepted);
 
         assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
@@ -145,7 +145,6 @@ public class ClientCommandControllerTest {
                         AlertCategory.FIRE
                 )
         );
-
         assertTrue(transport.sentMessages().isEmpty());
     }
 
@@ -153,12 +152,10 @@ public class ClientCommandControllerTest {
     public void unsubscribeAndDeregisterUpdateLocalState()
             throws Exception {
         registerLocally(ClientRole.SUBSCRIBER);
-
         Subscription subscription = new Subscription(
                 CampusLocation.HALL,
                 AlertCategory.FIRE
         );
-
         state.addSubscription(subscription);
 
         assertEquals(
@@ -173,7 +170,6 @@ public class ClientCommandControllerTest {
                         AlertCategory.FIRE
                 )
         );
-
         assertTrue(state.subscriptions().isEmpty());
 
         assertEquals(
@@ -184,7 +180,6 @@ public class ClientCommandControllerTest {
                 ),
                 controller.deregister()
         );
-
         assertTrue(state.profile().isEmpty());
         assertTrue(state.availableLocations().isEmpty());
         assertTrue(state.availableCategories().isEmpty());
@@ -217,7 +212,6 @@ public class ClientCommandControllerTest {
                 ),
                 sentMessage(0)
         );
-
         assertTrue(state.incidents().isEmpty());
 
         ControlMessage accepted = ControlMessage.of(
@@ -225,21 +219,16 @@ public class ClientCommandControllerTest {
                 "1",
                 "INC102"
         );
-
         controller.acceptResponse(accepted);
 
         assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
-        assertEquals(
-                sampleIncident(),
-                state.incident("INC102").orElseThrow()
-        );
+        assertEquals(sampleIncident(), state.incident("INC102").orElseThrow());
     }
 
     @Test
     public void deniedPublicationLeavesIncidentStateUnchanged()
             throws Exception {
         registerLocally(ClientRole.PUBLISHER);
-
         CompletableFuture<ControlMessage> future = controller.publish(
                 AlertCategory.FIRE,
                 CampusLocation.HALL,
@@ -248,7 +237,6 @@ public class ClientCommandControllerTest {
                 "Evacuate the building",
                 "evacuation_map.pdf"
         );
-
         ControlMessage denied = ControlMessage.of(
                 MessageType.ALERT_DENIED,
                 "1",
@@ -304,14 +292,12 @@ public class ClientCommandControllerTest {
                 ),
                 sentMessage(0)
         );
-
         ControlMessage accepted = ControlMessage.of(
                 MessageType.ALERT_UPDATED,
                 "1",
                 "INC102",
                 "2"
         );
-
         controller.acceptResponse(accepted);
 
         assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
@@ -336,17 +322,14 @@ public class ClientCommandControllerTest {
     public void deniedUpdatePreservesPreviousIncident()
             throws Exception {
         registerLocally(ClientRole.PUBLISHER);
-
         Incident original = sampleIncident();
         state.saveIncident(original);
-
         CompletableFuture<ControlMessage> future = controller.update(
                 "INC102",
                 Severity.WARNING,
                 "Fire Controlled",
                 "Remain outside the building"
         );
-
         ControlMessage denied = ControlMessage.of(
                 MessageType.ALERT_DENIED,
                 "1",
@@ -356,10 +339,7 @@ public class ClientCommandControllerTest {
         controller.acceptResponse(denied);
 
         assertEquals(denied, future.get(1, TimeUnit.SECONDS));
-        assertEquals(
-                original,
-                state.incident("INC102").orElseThrow()
-        );
+        assertEquals(original, state.incident("INC102").orElseThrow());
     }
 
     @Test
@@ -382,33 +362,181 @@ public class ClientCommandControllerTest {
                 ),
                 sentMessage(0)
         );
-
         ControlMessage accepted = ControlMessage.of(
                 MessageType.ALERT_CLOSED,
                 "1",
                 "INC102"
         );
-
         controller.acceptResponse(accepted);
 
         assertEquals(accepted, future.get(1, TimeUnit.SECONDS));
-
         Incident closed = state.incident("INC102").orElseThrow();
-
         assertEquals(2, closed.version());
         assertEquals(IncidentStatus.CLOSED, closed.status());
+    }
+
+    @Test
+    public void acceptedStatusReportUpdatesLatestLocalStatus()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        state.saveIncident(sampleIncident());
+
+        CompletableFuture<ControlMessage> future = controller.reportStatus(
+                "INC102",
+                SafetyStatus.SAFE
+        );
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.STATUS_REPORT,
+                        "1",
+                        "INC102",
+                        "Alice",
+                        "SAFE"
+                ),
+                sentMessage(0)
+        );
+        assertTrue(state.statusReports().isEmpty());
+
+        ControlMessage recorded = ControlMessage.of(
+                MessageType.STATUS_RECORDED,
+                "1"
+        );
+        controller.acceptResponse(recorded);
+
+        assertEquals(recorded, future.get(1, TimeUnit.SECONDS));
+        assertEquals(
+                new StatusReport("INC102", "Alice", SafetyStatus.SAFE),
+                state.statusReport("INC102").orElseThrow()
+        );
+    }
+
+    @Test
+    public void rejectedStatusReportPreservesPreviousStatus()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        state.saveIncident(sampleIncident());
+        StatusReport previous = new StatusReport(
+                "INC102",
+                "Alice",
+                SafetyStatus.NEED_HELP
+        );
+        state.saveStatusReport(previous);
+
+        CompletableFuture<ControlMessage> future = controller.reportStatus(
+                "INC102",
+                SafetyStatus.SAFE
+        );
+        ControlMessage rejected = ControlMessage.of(
+                MessageType.STATUS_REJECTED,
+                "1",
+                "Unknown incident"
+        );
+        controller.acceptResponse(rejected);
+
+        assertEquals(rejected, future.get(1, TimeUnit.SECONDS));
+        assertEquals(
+                previous,
+                state.statusReport("INC102").orElseThrow()
+        );
+    }
+
+    @Test
+    public void publisherCannotReportSubscriberStatus()
+            throws Exception {
+        registerLocally(ClientRole.PUBLISHER);
+        state.saveIncident(sampleIncident());
+
+        expectException(
+                IllegalStateException.class,
+                () -> controller.reportStatus(
+                        "INC102",
+                        SafetyStatus.SAFE
+                )
+        );
+
+        assertTrue(transport.sentMessages().isEmpty());
+    }
+
+    @Test
+    public void acceptedAttachmentDiscoveryStoresTcpEndpoint()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        state.saveIncident(sampleIncident());
+
+        CompletableFuture<ControlMessage> future =
+                controller.discoverAttachment(
+                        "INC102",
+                        "evacuation_map.pdf"
+                );
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.ATTACH_REQ,
+                        "1",
+                        "INC102",
+                        "evacuation_map.pdf"
+                ),
+                sentMessage(0)
+        );
+        assertTrue(state.attachmentInfos().isEmpty());
+
+        ControlMessage infoResponse = ControlMessage.of(
+                MessageType.ATTACH_INFO,
+                "1",
+                "INC102",
+                "CampusSecurity",
+                "192.168.1.15",
+                "6100",
+                "evacuation_map.pdf"
+        );
+        controller.acceptResponse(infoResponse);
+
+        assertEquals(infoResponse, future.get(1, TimeUnit.SECONDS));
+        assertEquals(
+                new AttachmentInfo(
+                        "1",
+                        "INC102",
+                        "CampusSecurity",
+                        "192.168.1.15",
+                        6100,
+                        "evacuation_map.pdf"
+                ),
+                state.attachmentInfo("INC102").orElseThrow()
+        );
+    }
+
+    @Test
+    public void deniedAttachmentDiscoveryLeavesEndpointEmpty()
+            throws Exception {
+        registerLocally(ClientRole.SUBSCRIBER);
+        state.saveIncident(sampleIncident());
+
+        CompletableFuture<ControlMessage> future =
+                controller.discoverAttachment(
+                        "INC102",
+                        "evacuation_map.pdf"
+                );
+        ControlMessage denied = ControlMessage.of(
+                MessageType.ATTACH_DENIED,
+                "1",
+                "INC102",
+                "Publisher unavailable"
+        );
+        controller.acceptResponse(denied);
+
+        assertEquals(denied, future.get(1, TimeUnit.SECONDS));
+        assertTrue(state.attachmentInfos().isEmpty());
     }
 
     @Test
     public void responsesAreCorrelatedByRequestNumber()
             throws Exception {
         registerLocally(ClientRole.SUBSCRIBER);
-
         CompletableFuture<ControlMessage> first = controller.subscribe(
                 CampusLocation.HALL,
                 AlertCategory.FIRE
         );
-
         CompletableFuture<ControlMessage> second = controller.subscribe(
                 CampusLocation.EV,
                 AlertCategory.SECURITY
@@ -418,7 +546,6 @@ public class ClientCommandControllerTest {
                 MessageType.SUBSCRIBED,
                 "2"
         );
-
         ControlMessage firstResponse = ControlMessage.of(
                 MessageType.SUBSCRIBED,
                 "1"
@@ -446,7 +573,6 @@ public class ClientCommandControllerTest {
                 ExecutionException.class,
                 () -> future.get(1, TimeUnit.SECONDS)
         );
-
         assertTrue(exception.getCause() instanceof ProtocolException);
         assertTrue(state.profile().isEmpty());
     }
@@ -460,14 +586,11 @@ public class ClientCommandControllerTest {
                 controller.register("Alice", ClientRole.SUBSCRIBER);
 
         assertFalse(future.isDone());
-
         ExecutionException exception = expectException(
                 ExecutionException.class,
                 () -> future.get(1, TimeUnit.SECONDS)
         );
-
         assertTrue(exception.getCause() instanceof TimeoutException);
-
         assertFalse(controller.acceptResponse(ControlMessage.of(
                 MessageType.REGISTERED,
                 "1",
@@ -522,9 +645,7 @@ public class ClientCommandControllerTest {
             throws ProtocolException {
         FakePorts.Transport.SentMessage sent =
                 transport.sentMessages().get(index);
-
         assertEquals(SERVER, sent.destination());
-
         return codec.decode(sent.message());
     }
 
