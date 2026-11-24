@@ -40,6 +40,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * The complete Emergency Server (issue 19).
@@ -89,7 +90,9 @@ public final class CenrsServer implements AutoCloseable {
     private final ScheduledExecutorService periodicSaver =
             Executors.newSingleThreadScheduledExecutor();
 
-    private final Object stateChangeLock = new Object();
+    // A ReentrantLock (not synchronized): virtual threads waiting for it give
+    // their carrier thread back, so many concurrent requests cannot freeze the server.
+    private final ReentrantLock stateChangeLock = new ReentrantLock();
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -211,9 +214,12 @@ public final class CenrsServer implements AutoCloseable {
 
         try {
             // A state change and its saved snapshot stay consistent.
-            synchronized (stateChangeLock) {
+            stateChangeLock.lock();
+            try {
                 dispatch(request, sender);
                 stateStore.save();
+            } finally {
+                stateChangeLock.unlock();
             }
         } catch (IOException | ProtocolException | RuntimeException exception) {
             // A bad request must never kill a server thread.
@@ -353,8 +359,11 @@ public final class CenrsServer implements AutoCloseable {
 
     private void saveQuietly() {
         try {
-            synchronized (stateChangeLock) {
+            stateChangeLock.lock();
+            try {
                 stateStore.save();
+            } finally {
+                stateChangeLock.unlock();
             }
         } catch (IOException | RuntimeException exception) {
             System.err.println("[SAVE ERROR] " + exception.getMessage());
