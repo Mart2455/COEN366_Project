@@ -61,7 +61,9 @@ public final class CenrsServer implements AutoCloseable {
     private static final long PERIODIC_SAVE_SECONDS = 5;
 
     private final DatagramSocket udpSocket;
-    private final UdpTransport transport;
+    private final UdpTransport network;
+    // Replies to a request are only sent after the change is saved.
+    private final ReplyAfterSaveTransport transport;
     private final UdpMessageCodec codec = new UdpMessageCodec();
 
     // Shared state (issue 18)
@@ -109,7 +111,8 @@ public final class CenrsServer implements AutoCloseable {
     ) throws IOException {
 
         udpSocket = new DatagramSocket(udpPort);
-        transport = new UdpTransport(udpSocket);
+        network = new UdpTransport(udpSocket);
+        transport = new ReplyAfterSaveTransport(network);
 
         stateStore = new ServerStateStore(
                 state, state, incidents, incidentIds, statuses, deliveries,
@@ -216,11 +219,19 @@ public final class CenrsServer implements AutoCloseable {
             // A state change and its saved snapshot stay consistent.
             stateChangeLock.lock();
             try {
+                transport.begin();
                 dispatch(request, sender);
                 stateStore.save();
+            } catch (IOException | ProtocolException | RuntimeException exception) {
+                // Not saved: no reply goes out, so the client never gets a false "success".
+                transport.discard();
+                throw exception;
             } finally {
                 stateChangeLock.unlock();
             }
+
+            // Saved: now the replies can be sent.
+            transport.commit();
         } catch (IOException | ProtocolException | RuntimeException exception) {
             // A bad request must never kill a server thread.
             System.err.println(
