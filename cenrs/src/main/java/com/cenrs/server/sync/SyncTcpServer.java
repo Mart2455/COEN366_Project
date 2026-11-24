@@ -19,14 +19,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * TCP listener of the Emergency Server for GET_ACTIVE_ALERTS (spec 2.10).
- *
- * One request per connection:
- *   client connects, sends GET_ACTIVE_ALERTS, server answers, server closes.
- * Each connection runs on its own (virtual) thread, so a slow client never
- * blocks other clients or the UDP processing.
- */
 public final class SyncTcpServer implements AutoCloseable {
 
     /** protocol.md: default TCP read timeout. */

@@ -18,17 +18,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-/**
- * Answers GET_ACTIVE_ALERTS (spec 2.10).
- *
- * Request:  GET_ACTIVE_ALERTS|RQ#|Name
- * Response: ACTIVE_ALERTS|RQ#|Number_Alerts
- *           followed by Number_Alerts lines:
- *           ACTIVE_ALERT|Incident_ID|Version|Category|Location|Severity|Status|Title|Description|Attachment
- * Denial:   ACTIVE_ALERTS_DENIED|RQ#|Reason
- *
- * This class only builds the answer. SyncTcpServer handles the sockets.
- */
 public final class ActiveAlertSyncService {
 
     private final RegistryPort registry;
@@ -45,7 +34,6 @@ public final class ActiveAlertSyncService {
         this.incidents = Objects.requireNonNull(incidents);
     }
 
-    /** Returns every message to send back, in order. */
     public List<ControlMessage> handle(ControlMessage request) {
         Objects.requireNonNull(request, "request cannot be null");
 
