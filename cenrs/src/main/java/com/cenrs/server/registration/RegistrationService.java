@@ -127,7 +127,11 @@ public final class RegistrationService {
             );
         }
 
-        if (!registry.addIfAbsent(client)) {
+        // A persisted client that registers again after a restart is reactivated.
+        if (
+                !registry.addIfAbsent(client)
+                && !registry.reactivate(client)
+        ) {
             return denied(
                     requestNumber,
                     "Name already exists"

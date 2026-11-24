@@ -1,5 +1,6 @@
 package com.cenrs.server.delivery;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,5 +22,10 @@ public final class InMemoryDeliveryStateRepository
     public Optional<DeliveryState> find(DeliveryKey key) {
         Objects.requireNonNull(key, "key cannot be null");
         return Optional.ofNullable(states.get(key));
+    }
+
+    /** Every recorded delivery. Used for persistence. */
+    public List<DeliveryState> findAll() {
+        return List.copyOf(states.values());
     }
 }
