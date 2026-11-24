@@ -542,6 +542,24 @@ ACTIVE_ALERTS|22|0
 
 No incident records follow a zero count.
 
+Records are sent oldest incident first. Only `ACTIVE` incidents that match at least one of the client's subscriptions are included. The `ALL` wildcards apply as for alerts.
+
+If the request cannot be served, the server sends a single line and no records:
+
+```text
+ACTIVE_ALERTS_DENIED|RQ#|Reason
+```
+
+Example:
+
+```text
+ACTIVE_ALERTS_DENIED|22|Client not registered
+```
+
+Reasons include `Unknown client`, `Client not registered` (a persisted client that has not registered again after a server restart), `Unauthorized role` (a `PUBLISHER` client), `Invalid request number`, and `Malformed request`.
+
+Each TCP connection carries exactly one request. The server closes the connection after its response. Each connection is handled on its own thread, so a slow client does not delay other clients or UDP processing. The server waits at most thirty seconds for the request line.
+
 ## Incident identifiers and versions
 
 The server generates `Incident_ID` values using `INC` followed by a persisted increasing number, such as `INC102`.

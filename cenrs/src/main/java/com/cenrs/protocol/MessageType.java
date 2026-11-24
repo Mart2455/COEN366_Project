@@ -28,7 +28,12 @@ public enum MessageType {
     ATTACH_ERROR("ATTACH_ERROR", 4),
     ATTACH_REQ("ATTACH_REQ" , 3),
     ATTACH_INFO("ATTACH_INFO" , 6),
-    ATTACH_DENIED("ATTACH_DENIED" , 3);
+    ATTACH_DENIED("ATTACH_DENIED" , 3),
+    // Active incident synchronization over TCP (issue 17)
+    GET_ACTIVE_ALERTS("GET_ACTIVE_ALERTS", 2),
+    ACTIVE_ALERTS("ACTIVE_ALERTS", 2),
+    ACTIVE_ALERT("ACTIVE_ALERT", 9),
+    ACTIVE_ALERTS_DENIED("ACTIVE_ALERTS_DENIED", 2);
 
     
     private final String wireName;
