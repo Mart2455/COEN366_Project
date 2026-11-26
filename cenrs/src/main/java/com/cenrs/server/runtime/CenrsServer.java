@@ -14,6 +14,7 @@ import com.cenrs.server.delivery.ExecutorDeliveryScheduler;
 import com.cenrs.server.delivery.InMemoryDeliveryStateRepository;
 import com.cenrs.server.incident.IncidentService;
 import com.cenrs.server.incident.InMemoryIncidentStore;
+import com.cenrs.server.incident.IncidentNotificationRouter;
 import com.cenrs.server.incident.SequentialIncidentIdGenerator;
 import com.cenrs.server.persistence.FilePersistence;
 import com.cenrs.server.persistence.ServerStateStore;
@@ -121,7 +122,20 @@ public final class CenrsServer implements AutoCloseable {
 
         registration = new RegistrationService(state, state, transport, codec);
         subscription = new SubscriptionService(state, state, transport, codec);
-        incidentService = new IncidentService(incidents, state, incidentIds, eventSink);
+        IncidentEventSinkPort notificationRouter =
+                new IncidentNotificationRouter(
+                        subscription,
+                        incidents,
+                        transport,
+                        codec,
+                        eventSink
+                );
+        incidentService = new IncidentService(
+                incidents,
+                state,
+                incidentIds,
+                notificationRouter
+        );
         statusService = new StatusService(state, incidents, statuses);
         attachments = new AttachmentDiscoveryService(incidents, state);
 

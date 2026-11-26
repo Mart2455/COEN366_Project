@@ -322,9 +322,16 @@ public class RecoveryAndLoadE2ETest {
         byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
         socket.send(new DatagramPacket(bytes, bytes.length, server));
 
-        DatagramPacket reply = new DatagramPacket(new byte[4097], 4097);
-        socket.receive(reply);
-        return codec.decode(Arrays.copyOf(reply.getData(), reply.getLength()));
+        while (true) {
+            DatagramPacket reply = new DatagramPacket(new byte[4097], 4097);
+            socket.receive(reply);
+            ControlMessage response =
+                    codec.decode(Arrays.copyOf(reply.getData(), reply.getLength()));
+
+            if (response.type() != MessageType.ALERT) {
+                return response;
+            }
+        }
     }
 
     private List<ControlMessage> sync(int tcpPort, String name, int lines) throws Exception {
