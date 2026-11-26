@@ -1,5 +1,6 @@
 package com.cenrs.server.runtime;
 
+import com.cenrs.server.delivery.AcknowledgementScheduler;
 import com.cenrs.protocol.ControlMessage;
 import com.cenrs.protocol.MessageType;
 import com.cenrs.protocol.TcpMessageIO;
@@ -10,9 +11,11 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -212,10 +215,95 @@ public class CenrsServerTest {
         );
     }
 
+    @Test
+    public void criticalAlertRetriesUntilAcknowledgedByRegisteredEndpoint()
+            throws Exception {
+        CenrsServer server = start(
+                folder.getRoot().toPath().resolve("ack-state.txt"),
+                Duration.ofMillis(400)
+        );
+        DatagramSocket alice = client();
+        DatagramSocket publisher = client();
+        DatagramSocket impostor = client();
+
+        send(server, alice, register("1", "Alice", "SUBSCRIBER", alice));
+        send(server, alice, "SUBSCRIBE|2|HALL|FIRE");
+        send(server, publisher, register("1", "Security", "PUBLISHER", publisher));
+        assertEquals(
+                MessageType.ALERT_ACCEPTED,
+                send(
+                        server,
+                        publisher,
+                        "PUBLISH_ALERT|3|FIRE|HALL|CRITICAL|Fire|Evacuate|NONE"
+                ).type()
+        );
+
+        ControlMessage first = receive(alice);
+        assertEquals(MessageType.ALERT, first.type());
+
+        sendWithoutResponse(
+                server,
+                impostor,
+                "ALERT_ACK|"
+                        + first.field(0)
+                        + "|"
+                        + first.field(1)
+                        + "|"
+                        + first.field(2)
+                        + "|Alice"
+        );
+
+        assertEquals(
+                MessageType.STATUS_RECORDED,
+                send(
+                        server,
+                        alice,
+                        "STATUS_REPORT|4|INC100|Alice|SAFE"
+                ).type()
+        );
+
+        ControlMessage retry = receive(alice);
+        assertEquals(first, retry);
+
+        sendWithoutResponse(
+                server,
+                alice,
+                "ALERT_ACK|"
+                        + first.field(0)
+                        + "|"
+                        + first.field(1)
+                        + "|"
+                        + first.field(2)
+                        + "|Alice"
+        );
+
+        alice.setSoTimeout(700);
+        try {
+            receive(alice);
+            throw new AssertionError("Acknowledged alert was retransmitted");
+        } catch (SocketTimeoutException expected) {
+            // The matching ACK cancelled the delivery timer.
+        }
+    }
+
     // ------------------------------------------------------------- helpers
 
     private CenrsServer start(Path stateFile) throws Exception {
-        CenrsServer server = new CenrsServer(0, 0, stateFile);
+        return start(
+                stateFile,
+                AcknowledgementScheduler.DEFAULT_TIMEOUT
+        );
+    }
+
+    private CenrsServer start(Path stateFile, Duration acknowledgementTimeout)
+            throws Exception {
+        CenrsServer server = new CenrsServer(
+                0,
+                0,
+                stateFile,
+                new LoggingIncidentEventSink(),
+                acknowledgementTimeout
+        );
         toClose.add(server);
 
         Thread runner = new Thread(() -> {
@@ -273,6 +361,19 @@ public class CenrsServerTest {
         DatagramPacket packet = new DatagramPacket(new byte[4097], 4097);
         socket.receive(packet);
         return codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+    }
+
+    private void sendWithoutResponse(
+            CenrsServer server,
+            DatagramSocket socket,
+            String message
+    ) throws Exception {
+        byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
+        socket.send(new DatagramPacket(
+                bytes,
+                bytes.length,
+                new InetSocketAddress("127.0.0.1", server.udpPort())
+        ));
     }
 
     /** Opens a TCP connection, sends one request, reads the expected lines. */

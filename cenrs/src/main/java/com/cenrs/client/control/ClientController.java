@@ -4,6 +4,8 @@ import com.cenrs.contract.AlertCategory;
 import com.cenrs.contract.CampusLocation;
 import com.cenrs.contract.ClientProfile;
 import com.cenrs.contract.ClientRole;
+import com.cenrs.contract.IncidentVersion;
+import com.cenrs.contract.Severity;
 import com.cenrs.contract.Subscription;
 import com.cenrs.network.UdpTransport;
 import com.cenrs.protocol.ControlMessage;
@@ -26,6 +28,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 public final class ClientController
         implements AutoCloseable {
@@ -41,6 +44,7 @@ public final class ClientController
             new UdpMessageCodec();
 
     private final UdpTransport transport;
+    private final Consumer<ControlMessage> alertConsumer;
 
     private final AtomicLong requestNumbers =
             new AtomicLong(1);
@@ -52,6 +56,9 @@ public final class ClientController
             new ConcurrentHashMap<>();
 
     private final Set<Subscription> subscriptions =
+            ConcurrentHashMap.newKeySet();
+
+    private final Set<IncidentVersion> receivedAlerts =
             ConcurrentHashMap.newKeySet();
 
     private final Thread receiverThread;
@@ -71,11 +78,29 @@ public final class ClientController
             int tcpPort,
             String advertisedIpAddress
     ) throws SocketException {
+        this(
+                server,
+                localUdpPort,
+                tcpPort,
+                advertisedIpAddress,
+                ClientController::displayAlert
+        );
+    }
+
+    public ClientController(
+            InetSocketAddress server,
+            int localUdpPort,
+            int tcpPort,
+            String advertisedIpAddress,
+            Consumer<ControlMessage> alertConsumer
+    ) throws SocketException {
 
         this.server = server;
         this.tcpPort = tcpPort;
         this.advertisedIpAddress =
                 advertisedIpAddress;
+        this.alertConsumer =
+                java.util.Objects.requireNonNull(alertConsumer);
 
         socket = new DatagramSocket(localUdpPort);
         transport = new UdpTransport(socket);
@@ -340,6 +365,11 @@ public final class ClientController
                 ControlMessage response =
                         codec.decode(datagram);
 
+                if (response.type() == MessageType.ALERT) {
+                    receiveAlert(response);
+                    continue;
+                }
+
                 System.out.println(
                         "[UDP RECEIVED] "
                                 + server
@@ -374,7 +404,8 @@ public final class ClientController
                 return;
             } catch (
                     IOException
-                    | ProtocolException exception
+                    | ProtocolException
+                    | RuntimeException exception
             ) {
                 System.err.println(
                         "[CLIENT ERROR] "
@@ -382,6 +413,72 @@ public final class ClientController
                 );
             }
         }
+    }
+
+    private void receiveAlert(ControlMessage alert)
+            throws ProtocolException {
+        IncidentVersion incidentVersion;
+        Severity severity;
+
+        try {
+            long requestNumber = Long.parseLong(alert.field(0));
+            if (requestNumber < 1) {
+                throw new IllegalArgumentException(
+                        "Alert request number must be positive"
+                );
+            }
+
+            incidentVersion = new IncidentVersion(
+                    alert.field(1),
+                    Long.parseLong(alert.field(2))
+            );
+            AlertCategory.valueOf(alert.field(3));
+            CampusLocation.valueOf(alert.field(4));
+            severity = Severity.valueOf(alert.field(5));
+        } catch (IllegalArgumentException exception) {
+            throw new ProtocolException(
+                    "Invalid ALERT message: " + exception.getMessage(),
+                    exception
+            );
+        }
+
+        if (severity.requiresAcknowledgement()) {
+            ClientProfile current = profile;
+            if (current == null || !current.role().canSubscribe()) {
+                System.err.println(
+                        "[CLIENT ERROR] Cannot acknowledge critical alert "
+                                + incidentVersion.incidentId()
+                                + " without a registered subscriber profile"
+                );
+            } else {
+                try {
+                    sendWithoutResponse(
+                            ControlMessage.of(
+                                    MessageType.ALERT_ACK,
+                                    alert.field(0),
+                                    incidentVersion.incidentId(),
+                                    Long.toString(incidentVersion.version()),
+                                    current.name()
+                            )
+                    );
+                } catch (IOException | ProtocolException exception) {
+                    System.err.println(
+                            "[CLIENT ERROR] Could not acknowledge alert "
+                                    + incidentVersion.incidentId()
+                                    + ": "
+                                    + exception.getMessage()
+                    );
+                }
+            }
+        }
+
+        if (receivedAlerts.add(incidentVersion)) {
+            alertConsumer.accept(alert);
+        }
+    }
+
+    private static void displayAlert(ControlMessage alert) {
+        System.out.println("[ALERT] " + alert.fields());
     }
 
     private ClientProfile requireProfile() {

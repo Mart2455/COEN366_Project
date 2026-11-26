@@ -1,6 +1,8 @@
 package com.cenrs.server.delivery;
 
 import com.cenrs.contract.fake.FakePorts;
+import com.cenrs.contract.ClientProfile;
+import com.cenrs.contract.ClientRole;
 import com.cenrs.protocol.ControlMessage;
 import com.cenrs.protocol.MessageType;
 import org.junit.Before;
@@ -162,8 +164,20 @@ public class AcknowledgementSchedulerTest {
         throws Exception {
 
         send(key, "ALERT|83|INC102");
+        FakePorts.Registry registry = new FakePorts.Registry();
+        registry.addIfAbsent(
+            new ClientProfile(
+                "Alice",
+                ClientRole.SUBSCRIBER,
+                "127.0.0.1",
+                5001,
+                6001
+            )
+        );
         AcknowledgementHandler handler =
-            new AcknowledgementHandler(acknowledgements);
+            new AcknowledgementHandler(acknowledgements, registry);
+        InetSocketAddress sender =
+            new InetSocketAddress("127.0.0.1", 5001);
 
         ControlMessage stale = ControlMessage.of(
             MessageType.ALERT_ACK,
@@ -181,8 +195,14 @@ public class AcknowledgementSchedulerTest {
             "Alice"
         );
 
-        assertFalse(handler.handle(stale));
-        assertTrue(handler.handle(matching));
+        assertFalse(handler.handle(stale, sender));
+        assertFalse(
+            handler.handle(
+                matching,
+                new InetSocketAddress("127.0.0.1", 5002)
+            )
+        );
+        assertTrue(handler.handle(matching, sender));
     }
 
     @Test

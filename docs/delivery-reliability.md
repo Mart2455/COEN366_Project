@@ -21,3 +21,9 @@ is recorded as UNCONFIRMED.
 
 INFO and WARNING notifications are sent directly unless the message is
 ALL_CLEAR. Timers are temporary and are cancelled during server shutdown.
+
+The production server routes new CRITICAL alerts through this scheduler after
+the incident snapshot is saved. Its acknowledgement timeout defaults to two
+seconds and can be set through the `CenrsServer` constructor. The client
+acknowledges each CRITICAL copy using its original request number; it suppresses
+repeat display by `(Incident_ID, Version)` while still acknowledging duplicates.
