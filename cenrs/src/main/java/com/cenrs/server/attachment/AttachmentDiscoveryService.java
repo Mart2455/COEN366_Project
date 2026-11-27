@@ -51,7 +51,10 @@ public class AttachmentDiscoveryService
 
             var publisher = registry.findByName(publisherName);
 
-            if (publisher.isEmpty())
+            if (
+                publisher.isEmpty()
+                || !registry.isActive(publisherName)
+            )
             {
                 return ControlMessage.of(MessageType.ATTACH_DENIED , request.field(0) , incidentId , "Publisher Unavailable");
             }

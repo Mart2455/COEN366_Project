@@ -1,5 +1,6 @@
 package com.cenrs.server.runtime;
 
+import com.cenrs.server.delivery.AcknowledgementScheduler;
 import com.cenrs.protocol.ControlMessage;
 import com.cenrs.protocol.MessageType;
 import com.cenrs.protocol.TcpMessageIO;
@@ -10,9 +11,11 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -28,6 +31,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /** Issue 19: the whole server, over real UDP and TCP sockets. */
 public class CenrsServerTest {
@@ -72,6 +76,10 @@ public class CenrsServerTest {
                 send(server, security,
                         "PUBLISH_ALERT|3|FIRE|HALL|CRITICAL|Fire Alarm|Evacuate Building|NONE")
         );
+        ControlMessage aliceAlert = receive(alice);
+        assertEquals(MessageType.ALERT, aliceAlert.type());
+        assertEquals("INC100", aliceAlert.field(1));
+
         assertEquals(
                 ControlMessage.of(MessageType.STATUS_RECORDED, "4"),
                 send(server, alice, "STATUS_REPORT|4|INC100|Alice|SAFE")
@@ -140,10 +148,162 @@ public class CenrsServerTest {
         pool.shutdown();
     }
 
+    @Test
+    public void publishedIncidentIsDistributedToMatchingSubscribers()
+            throws Exception {
+        Path stateFile = folder.getRoot().toPath().resolve("distribution-state.txt");
+        CenrsServer server = start(stateFile);
+        DatagramSocket alice = client();
+        DatagramSocket bob = client();
+        DatagramSocket security = client();
+
+        send(server, alice, register("1", "Alice", "SUBSCRIBER", alice));
+        send(server, alice, "SUBSCRIBE|2|HALL|FIRE");
+        send(server, bob, register("1", "Bob", "BOTH", bob));
+        send(server, bob, "SUBSCRIBE|2|HALL|ALL");
+        send(server, security, register("1", "Security", "PUBLISHER", security));
+
+        ControlMessage accepted = send(
+                server,
+                security,
+                "PUBLISH_ALERT|3|FIRE|HALL|CRITICAL|Fire Alarm|Evacuate|floor plan.pdf"
+        );
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.ALERT_ACCEPTED,
+                        "3",
+                        "INC100"
+                ),
+                accepted
+        );
+
+        ControlMessage aliceAlert = receive(alice);
+        ControlMessage bobAlert = receive(bob);
+
+        assertEquals(MessageType.ALERT, aliceAlert.type());
+        assertEquals(MessageType.ALERT, bobAlert.type());
+        assertTrue(Long.parseLong(aliceAlert.field(0)) > 0);
+        assertTrue(Long.parseLong(bobAlert.field(0)) > 0);
+        assertTrue(!aliceAlert.field(0).equals(bobAlert.field(0)));
+
+        for (ControlMessage alert : List.of(aliceAlert, bobAlert)) {
+            assertEquals("INC100", alert.field(1));
+            assertEquals("1", alert.field(2));
+            assertEquals("FIRE", alert.field(3));
+            assertEquals("HALL", alert.field(4));
+            assertEquals("CRITICAL", alert.field(5));
+            assertEquals("Fire Alarm", alert.field(6));
+            assertEquals("Evacuate", alert.field(7));
+            assertEquals("floor plan.pdf", alert.field(8));
+        }
+
+        assertEquals(
+                ControlMessage.of(
+                        MessageType.ATTACH_INFO,
+                        "4",
+                        "INC100",
+                        "Security",
+                        "127.0.0.1",
+                        Integer.toString(security.getLocalPort() + 1),
+                        "floor plan.pdf"
+                ),
+                send(
+                        server,
+                        alice,
+                        "ATTACH_REQ|4|INC100|floor plan.pdf"
+                )
+        );
+    }
+
+    @Test
+    public void criticalAlertRetriesUntilAcknowledgedByRegisteredEndpoint()
+            throws Exception {
+        CenrsServer server = start(
+                folder.getRoot().toPath().resolve("ack-state.txt"),
+                Duration.ofMillis(400)
+        );
+        DatagramSocket alice = client();
+        DatagramSocket publisher = client();
+        DatagramSocket impostor = client();
+
+        send(server, alice, register("1", "Alice", "SUBSCRIBER", alice));
+        send(server, alice, "SUBSCRIBE|2|HALL|FIRE");
+        send(server, publisher, register("1", "Security", "PUBLISHER", publisher));
+        assertEquals(
+                MessageType.ALERT_ACCEPTED,
+                send(
+                        server,
+                        publisher,
+                        "PUBLISH_ALERT|3|FIRE|HALL|CRITICAL|Fire|Evacuate|NONE"
+                ).type()
+        );
+
+        ControlMessage first = receive(alice);
+        assertEquals(MessageType.ALERT, first.type());
+
+        sendWithoutResponse(
+                server,
+                impostor,
+                "ALERT_ACK|"
+                        + first.field(0)
+                        + "|"
+                        + first.field(1)
+                        + "|"
+                        + first.field(2)
+                        + "|Alice"
+        );
+
+        assertEquals(
+                MessageType.STATUS_RECORDED,
+                send(
+                        server,
+                        alice,
+                        "STATUS_REPORT|4|INC100|Alice|SAFE"
+                ).type()
+        );
+
+        ControlMessage retry = receive(alice);
+        assertEquals(first, retry);
+
+        sendWithoutResponse(
+                server,
+                alice,
+                "ALERT_ACK|"
+                        + first.field(0)
+                        + "|"
+                        + first.field(1)
+                        + "|"
+                        + first.field(2)
+                        + "|Alice"
+        );
+
+        alice.setSoTimeout(700);
+        try {
+            receive(alice);
+            throw new AssertionError("Acknowledged alert was retransmitted");
+        } catch (SocketTimeoutException expected) {
+            // The matching ACK cancelled the delivery timer.
+        }
+    }
+
     // ------------------------------------------------------------- helpers
 
     private CenrsServer start(Path stateFile) throws Exception {
-        CenrsServer server = new CenrsServer(0, 0, stateFile);
+        return start(
+                stateFile,
+                AcknowledgementScheduler.DEFAULT_TIMEOUT
+        );
+    }
+
+    private CenrsServer start(Path stateFile, Duration acknowledgementTimeout)
+            throws Exception {
+        CenrsServer server = new CenrsServer(
+                0,
+                0,
+                stateFile,
+                new LoggingIncidentEventSink(),
+                acknowledgementTimeout
+        );
         toClose.add(server);
 
         Thread runner = new Thread(() -> {
@@ -195,6 +355,25 @@ public class CenrsServerTest {
         socket.receive(reply);
 
         return codec.decode(Arrays.copyOf(reply.getData(), reply.getLength()));
+    }
+
+    private ControlMessage receive(DatagramSocket socket) throws Exception {
+        DatagramPacket packet = new DatagramPacket(new byte[4097], 4097);
+        socket.receive(packet);
+        return codec.decode(Arrays.copyOf(packet.getData(), packet.getLength()));
+    }
+
+    private void sendWithoutResponse(
+            CenrsServer server,
+            DatagramSocket socket,
+            String message
+    ) throws Exception {
+        byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
+        socket.send(new DatagramPacket(
+                bytes,
+                bytes.length,
+                new InetSocketAddress("127.0.0.1", server.udpPort())
+        ));
     }
 
     /** Opens a TCP connection, sends one request, reads the expected lines. */

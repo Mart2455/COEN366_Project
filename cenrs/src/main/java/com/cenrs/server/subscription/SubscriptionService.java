@@ -161,6 +161,7 @@ public final class SubscriptionService {
                         client ->
                                 client.role().canSubscribe()
                 )
+                .filter(client -> registry.isActive(client.name()))
                 .filter(
                         client ->
                                 subscriptions

@@ -48,6 +48,14 @@ persist history with incident state.
 
 ## Integration responsibilities
 
+The production `CenrsServer` routes `onCreated` through
+`IncidentNotificationRouter`. It selects active matching subscribers, assigns a
+distinct server-generated request number to each `ALERT`, and sends the encoded
+UDP datagrams through the save-aware transport. Each notification carries the
+same incident ID and version. The matching client names are recorded as
+recipients. `ATTACH_REQ` is handled separately by `AttachmentDiscoveryService`,
+which returns the publisher endpoint for an active incident attachment.
+
 The injected ID generator must atomically allocate `INC` plus a persisted increasing
 number so IDs cannot repeat after restart. The service rejects collisions rather
 than overwriting an incident. Test generators demonstrate distinct IDs within a
@@ -62,8 +70,8 @@ state before sending the returned success response or distributing queued events
 A throwing callback is not rolled back by this service; reliable event recovery
 requires runtime/outbox handling. The outer dispatcher must deduplicate requests
 by sender and request number and replay original responses without invoking a
-state transition twice. Networking, persistence adapters, replay handling, and
-notification distribution remain runtime/sibling responsibilities.
+state transition twice. Updates and closure notification routing remain separate
+from the initial `ALERT` distribution described above.
 
 ## Verification
 

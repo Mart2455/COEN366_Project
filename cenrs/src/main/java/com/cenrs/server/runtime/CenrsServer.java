@@ -14,6 +14,7 @@ import com.cenrs.server.delivery.ExecutorDeliveryScheduler;
 import com.cenrs.server.delivery.InMemoryDeliveryStateRepository;
 import com.cenrs.server.incident.IncidentService;
 import com.cenrs.server.incident.InMemoryIncidentStore;
+import com.cenrs.server.incident.IncidentNotificationRouter;
 import com.cenrs.server.incident.SequentialIncidentIdGenerator;
 import com.cenrs.server.persistence.FilePersistence;
 import com.cenrs.server.persistence.ServerStateStore;
@@ -33,6 +34,7 @@ import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
@@ -98,9 +100,8 @@ public final class CenrsServer implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    public CenrsServer(int udpPort, int tcpPort, Path stateFile)
-            throws IOException {
-        this(udpPort, tcpPort, stateFile, new LoggingIncidentEventSink());
+    public CenrsServer(int udpPort, int tcpPort, Path stateFile) throws IOException {
+        this(udpPort,tcpPort,stateFile,new LoggingIncidentEventSink(),AcknowledgementScheduler.DEFAULT_TIMEOUT);
     }
 
     public CenrsServer(
@@ -108,6 +109,16 @@ public final class CenrsServer implements AutoCloseable {
             int tcpPort,
             Path stateFile,
             IncidentEventSinkPort eventSink
+    ) throws IOException {
+        this(udpPort, tcpPort, stateFile,eventSink,AcknowledgementScheduler.DEFAULT_TIMEOUT);
+    }
+
+    public CenrsServer(
+            int udpPort,
+            int tcpPort,
+            Path stateFile,
+            IncidentEventSinkPort eventSink,
+            Duration acknowledgementTimeout
     ) throws IOException {
 
         udpSocket = new DatagramSocket(udpPort);
@@ -121,15 +132,37 @@ public final class CenrsServer implements AutoCloseable {
 
         registration = new RegistrationService(state, state, transport, codec);
         subscription = new SubscriptionService(state, state, transport, codec);
-        incidentService = new IncidentService(incidents, state, incidentIds, eventSink);
-        statusService = new StatusService(state, incidents, statuses);
-        attachments = new AttachmentDiscoveryService(incidents, state);
-
         deliveryTimers = new ExecutorDeliveryScheduler();
         acknowledgementScheduler = new AcknowledgementScheduler(
-                Clock.systemUTC(), deliveryTimers, deliveries, transport
+                Clock.systemUTC(),
+                deliveryTimers,
+                deliveries,
+                transport,
+                acknowledgementTimeout
         );
-        acknowledgements = new AcknowledgementHandler(acknowledgementScheduler);
+        acknowledgements = new AcknowledgementHandler(
+                acknowledgementScheduler,
+                state
+        );
+
+        IncidentEventSinkPort notificationRouter =
+                new IncidentNotificationRouter(
+                        subscription,
+                        incidents,
+                        transport,
+                        codec,
+                        acknowledgementScheduler,
+                        transport::afterCommit,
+                        eventSink
+                );
+        incidentService = new IncidentService(
+                incidents,
+                state,
+                incidentIds,
+                notificationRouter
+        );
+        statusService = new StatusService(state, incidents, statuses);
+        attachments = new AttachmentDiscoveryService(incidents, state);
 
         try {
             syncServer = new SyncTcpServer(
@@ -281,7 +314,7 @@ public final class CenrsServer implements AutoCloseable {
 
             case ALERT_ACK -> {
                 // No reply: a duplicate or late ACK is simply ignored.
-                if (!acknowledgements.handle(request)) {
+                if (!acknowledgements.handle(request, sender)) {
                     System.out.println(
                             "[ACK IGNORED] duplicate or unknown " + request.fields()
                     );

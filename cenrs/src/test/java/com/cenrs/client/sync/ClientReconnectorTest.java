@@ -196,8 +196,15 @@ public class ClientReconnectorTest {
                 new InetSocketAddress("127.0.0.1", server.udpPort())
         ));
 
-        DatagramPacket reply = new DatagramPacket(new byte[4097], 4097);
-        socket.receive(reply);
-        return codec.decode(Arrays.copyOf(reply.getData(), reply.getLength()));
+        while (true) {
+            DatagramPacket reply = new DatagramPacket(new byte[4097], 4097);
+            socket.receive(reply);
+            ControlMessage response =
+                    codec.decode(Arrays.copyOf(reply.getData(), reply.getLength()));
+
+            if (response.type() != MessageType.ALERT) {
+                return response;
+            }
+        }
     }
 }
