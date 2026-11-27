@@ -12,4 +12,3 @@ public interface StatusStorePort {
         String clientName
     );
 }
-//this has to be replaced later by issue 18 

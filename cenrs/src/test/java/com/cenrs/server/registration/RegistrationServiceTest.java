@@ -374,6 +374,50 @@ public class RegistrationServiceTest {
         );
     }
 
+    @Test
+    public void persistedClientCanRegisterAgainAfterRestart()
+            throws Exception {
+
+        // After a restart, Alice is known but inactive (issue 18).
+        com.cenrs.server.state.ServerState state =
+                new com.cenrs.server.state.ServerState();
+
+        state.addInactive(
+                new com.cenrs.contract.ClientProfile(
+                        "Alice",
+                        ClientRole.SUBSCRIBER,
+                        "127.0.0.1",
+                        5001,
+                        6001
+                )
+        );
+
+        RegistrationService restarted = new RegistrationService(
+                state,
+                state,
+                transport,
+                codec
+        );
+
+        // She comes back from a new UDP port: accepted, and her endpoint is updated.
+        restarted.handle(
+                register("1", "Alice", "SUBSCRIBER", "127.0.0.1", "7001", "8001"),
+                new InetSocketAddress("127.0.0.1", 7001)
+        );
+
+        assertEquals(MessageType.REGISTERED, responseAt(0).type());
+        assertTrue(state.isActive("Alice"));
+        assertEquals(7001, state.findByName("Alice").orElseThrow().udpPort());
+
+        // Now she is active, so another registration with her name is denied.
+        restarted.handle(
+                register("2", "Alice", "SUBSCRIBER", "127.0.0.1", "7002", "8002"),
+                new InetSocketAddress("127.0.0.1", 7002)
+        );
+
+        assertEquals(MessageType.REGISTER_DENIED, responseAt(1).type());
+    }
+
     private ControlMessage register(
             String requestNumber,
             String name,

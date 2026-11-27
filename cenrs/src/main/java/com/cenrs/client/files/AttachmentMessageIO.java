@@ -3,15 +3,18 @@ package com.cenrs.client.files;
 import com.cenrs.protocol.ControlMessage;
 import com.cenrs.protocol.MessageType;
 import com.cenrs.protocol.ProtocolException;
-import com.cenrs.protocol.UdpMessageCodec;
-import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
+import com.cenrs.protocol.TcpMessageIO;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
 import java.util.Set;
 
+/**
+ * Peer-to-peer attachment headers over TCP.
+ * Framing (one message per line, max 4096 bytes) comes from the shared TcpMessageIO;
+ * this class only makes sure the message is an attachment message.
+ */
 public final class AttachmentMessageIO {
     private static final Set<MessageType> ATTACHMENT_TYPES = Set.of(
         MessageType.GET_ATTACHMENT,
@@ -20,7 +23,7 @@ public final class AttachmentMessageIO {
         MessageType.ATTACH_ERROR
     );
 
-    private final UdpMessageCodec codec = new UdpMessageCodec();
+    private final TcpMessageIO framing = new TcpMessageIO();
 
     public void write(
         OutputStream output,
@@ -29,45 +32,16 @@ public final class AttachmentMessageIO {
         Objects.requireNonNull(output);
         requireAttachmentType(message);
 
-        output.write(codec.encode(message));
-        output.write('\n');
-        output.flush();
+        framing.write(output, message);
     }
 
     public ControlMessage read(InputStream input)
         throws IOException, ProtocolException {
-
         Objects.requireNonNull(input);
-        ByteArrayOutputStream header = new ByteArrayOutputStream();
 
-        while (true) {
-            int next = input.read();
-            if (next == -1) {
-                throw new EOFException(
-                    "Connection closed before the TCP header was complete"
-                );
-            }
-            if (next == '\n') {
-                break;
-            }
-
-            if (header.size() == UdpMessageCodec.MAX_DATAGRAM_BYTES) {
-                throw new ProtocolException(
-                    "TCP header exceeds "
-                        + UdpMessageCodec.MAX_DATAGRAM_BYTES
-                        + " bytes"
-                );
-            }
-
-            header.write(next);
-        }
-
-        if (header.size() == 0) {
-            throw new ProtocolException("TCP header cannot be empty");
-        }
-
-        ControlMessage message = codec.decode(header.toByteArray());
+        ControlMessage message = framing.read(input);
         requireAttachmentType(message);
+
         return message;
     }
 
